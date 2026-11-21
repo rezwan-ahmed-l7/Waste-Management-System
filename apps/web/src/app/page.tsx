@@ -16,6 +16,7 @@ export default function HomePage() {
           <nav className="nav" aria-label="Main navigation">
             <a href="#workflow">How it works</a>
             <a href="#responsibility">Our approach</a>
+            <a href="/login">Staff sign in</a>
           </nav>
         </div>
       </header>
