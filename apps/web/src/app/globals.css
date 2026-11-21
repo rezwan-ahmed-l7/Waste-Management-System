@@ -86,3 +86,13 @@ h1 { max-width: 720px; margin: 14px 0 18px; font-size: clamp(38px, 6vw, 64px); l
 .inlineEvidence input, .inlineEvidence select { min-width:0; width:100%; padding:9px; border:1px solid var(--line); border-radius:8px; background:#fff; }
 .inlineEvidence button, .inlineEvidence .error { grid-column:1/-1; }
 @media(max-width:760px){.dashboardActions{gap:8px}.inlineEvidence{grid-template-columns:1fr}}
+
+.teamForm, .assignmentForm, .memberForm { display:flex; flex-wrap:wrap; align-items:center; gap:9px; padding:14px; border:1px solid var(--line); border-radius:12px; background:#fbfdfb; }
+.teamForm { margin-bottom:12px; }
+.teamForm input, .teamForm select, .assignmentForm select, .memberForm select { min-width:150px; padding:10px; border:1px solid var(--line); border-radius:8px; background:#fff; color:var(--ink); }
+.teamForm strong { width:100%; }
+.teamCard { padding:14px 18px; }
+.memberForm { margin-top:12px; padding:0; border:0; background:transparent; }
+.assignmentForm { width:100%; margin-top:12px; }
+.assignmentForm .checkLabel { display:flex; align-items:center; gap:6px; font-size:12px; color:var(--muted); }
+.assignmentForm .checkLabel input { width:auto; }
