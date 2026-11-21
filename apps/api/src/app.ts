@@ -259,6 +259,114 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
 
 
 
+
+  app.get("/api/v1/reports/:reportId/attachments", authenticate(database), requirePermission(database, "reports.review"), async (req,res,next)=>{
+    const id=z.string().uuid().safeParse(req.params.reportId);
+    if(!id.success){res.status(404).json({error:{code:"REPORT_NOT_FOUND",message:"Report not found."}});return;}
+    try{
+      const result=await database.query(
+        "SELECT attachment_id AS \"attachmentId\",original_file_name AS \"fileName\",media_type AS \"mediaType\",file_size_bytes AS \"fileSizeBytes\",uploaded_at AS \"uploadedAt\" " +
+        "FROM waste_mgmt.report_attachments WHERE report_id=$1 ORDER BY uploaded_at",
+        [id.data]
+      );
+      res.status(200).json({data:result.rows});
+    }catch(error){next(error);}
+  });
+
+  app.get("/api/v1/reports/:reportId/attachments/:attachmentId", authenticate(database), requirePermission(database, "reports.review"), async (req,res,next)=>{
+    const reportId=z.string().uuid().safeParse(req.params.reportId);
+    const attachmentId=z.string().uuid().safeParse(req.params.attachmentId);
+    if(!reportId.success||!attachmentId.success){res.status(404).json({error:{code:"ATTACHMENT_NOT_FOUND",message:"Attachment not found."}});return;}
+    try{
+      const result=await database.query(
+        "SELECT storage_key AS \"storageKey\" FROM waste_mgmt.report_attachments WHERE report_id=$1 AND attachment_id=$2",
+        [reportId.data,attachmentId.data]
+      );
+      const key=result.rows[0]?.storageKey;
+      if(!key){res.status(404).json({error:{code:"ATTACHMENT_NOT_FOUND",message:"Attachment not found."}});return;}
+      const file=await readPrivateUpload(key);
+      res.setHeader("Content-Type",file.mediaType);
+      res.setHeader("Content-Length",String(file.buffer.byteLength));
+      res.setHeader("Content-Disposition","attachment; filename=\"report-evidence-"+attachmentId.data+"."+file.extension+"\"");
+      res.setHeader("X-Content-Type-Options","nosniff");
+      res.setHeader("Cache-Control","private, no-store");
+      res.status(200).send(file.buffer);
+    }catch(error){next(error);}
+  });
+
+  app.post("/api/v1/collection-submissions/:submissionId/photos", authenticate(database), requirePermission(database, "collections.submit"), privateUpload.array("attachments",5), async (req,res,next)=>{
+    const id=z.string().uuid().safeParse(req.params.submissionId);
+    const auth=req.auth;
+    const files=Array.isArray(req.files)?req.files:[];
+    if(!id.success||!auth||files.length===0){res.status(400).json({error:{code:"VALIDATION_ERROR",message:"Choose at least one photo or PDF attachment."}});return;}
+    const savedKeys:string[]=[];
+    const client=await database.connect();
+    try{
+      await client.query("BEGIN");
+      await client.query("SELECT set_config('app.actor_user_id',$1,true)",[auth.userId]);
+      const submission=await client.query(
+        "SELECT submission_id FROM waste_mgmt.collection_submissions WHERE submission_id=$1 AND submitted_by=$2 AND status='submitted' FOR UPDATE",
+        [id.data,auth.userId]
+      );
+      if(submission.rowCount!==1){
+        await client.query("ROLLBACK");
+        res.status(404).json({error:{code:"SUBMISSION_NOT_FOUND",message:"An editable collection submission was not found."}});
+        return;
+      }
+      const saved=[];
+      for(const file of files){
+        const stored=await storePrivateUpload(file);
+        savedKeys.push(stored.storageKey);
+        const inserted=await client.query(
+          "INSERT INTO waste_mgmt.collection_photos(submission_id,storage_key,media_type,byte_size,checksum_sha256,uploaded_by) " +
+          "VALUES ($1,$2,$3,$4,$5,$6) RETURNING photo_id AS \"photoId\",media_type AS \"mediaType\",byte_size AS \"byteSize\"",
+          [id.data,stored.storageKey,stored.mediaType,stored.fileSizeBytes,stored.checksumSha256,auth.userId]
+        );
+        saved.push(inserted.rows[0]);
+      }
+      await client.query("COMMIT");
+      res.status(201).json({data:saved});
+    }catch(error){
+      await client.query("ROLLBACK").catch(()=>undefined);
+      await Promise.all(savedKeys.map(removePrivateUpload));
+      next(error);
+    }finally{client.release();}
+  });
+
+  app.get("/api/v1/collection-submissions/:submissionId/photos", authenticate(database), requirePermission(database, "collections.verify"), async (req,res,next)=>{
+    const id=z.string().uuid().safeParse(req.params.submissionId);
+    if(!id.success){res.status(404).json({error:{code:"SUBMISSION_NOT_FOUND",message:"Submission not found."}});return;}
+    try{
+      const result=await database.query(
+        "SELECT photo_id AS \"photoId\",media_type AS \"mediaType\",byte_size AS \"byteSize\",created_at AS \"createdAt\" " +
+        "FROM waste_mgmt.collection_photos WHERE submission_id=$1 ORDER BY created_at",
+        [id.data]
+      );
+      res.status(200).json({data:result.rows});
+    }catch(error){next(error);}
+  });
+
+  app.get("/api/v1/collection-submissions/:submissionId/photos/:photoId", authenticate(database), requirePermission(database, "collections.verify"), async (req,res,next)=>{
+    const submissionId=z.string().uuid().safeParse(req.params.submissionId);
+    const photoId=z.string().uuid().safeParse(req.params.photoId);
+    if(!submissionId.success||!photoId.success){res.status(404).json({error:{code:"PHOTO_NOT_FOUND",message:"Photo not found."}});return;}
+    try{
+      const result=await database.query(
+        "SELECT storage_key AS \"storageKey\" FROM waste_mgmt.collection_photos WHERE submission_id=$1 AND photo_id=$2",
+        [submissionId.data,photoId.data]
+      );
+      const key=result.rows[0]?.storageKey;
+      if(!key){res.status(404).json({error:{code:"PHOTO_NOT_FOUND",message:"Photo not found."}});return;}
+      const file=await readPrivateUpload(key);
+      res.setHeader("Content-Type",file.mediaType);
+      res.setHeader("Content-Length",String(file.buffer.byteLength));
+      res.setHeader("Content-Disposition","attachment; filename=\"collection-evidence-"+photoId.data+"."+file.extension+"\"");
+      res.setHeader("X-Content-Type-Options","nosniff");
+      res.setHeader("Cache-Control","private, no-store");
+      res.status(200).send(file.buffer);
+    }catch(error){next(error);}
+  });
+
   app.post("/api/v1/reports/:reportId/notes", authenticate(database), requirePermission(database, "reports.review"), async (req,res,next)=>{
     const id=z.string().uuid().safeParse(req.params.reportId);
     const body=z.object({body:z.string().trim().min(2).max(2000),visibility:z.enum(["public","internal"]).default("internal")}).strict().safeParse(req.body);
