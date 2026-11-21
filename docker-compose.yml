@@ -38,6 +38,7 @@ services:
       NODE_ENV: production
       API_HOST: 0.0.0.0
       API_PORT: 4000
+      TRUST_PROXY_HOPS: 1
       DATABASE_URL: postgresql://waste_app:${APP_DB_PASSWORD}@db:5432/waste_management
       WEB_ORIGIN: https://${DOMAIN}
       PRIVATE_STORAGE_DIR: /data/private
