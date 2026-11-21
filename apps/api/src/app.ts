@@ -56,6 +56,16 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
       res.status(429).json({ error: { code: "RATE_LIMITED", message: "Too many reports. Please try again later." } });
     }
   });
+  
+  const evidenceUploadLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    limit: 10,
+    standardHeaders: "draft-8",
+    legacyHeaders: false,
+    handler: (_req, res) => {
+      res.status(429).json({ error: { code: "UPLOAD_RATE_LIMITED", message: "Too many evidence uploads. Try again later." } });
+    }
+  });
 
 
   app.post("/api/v1/auth/login", loginLimiter, async (req, res, next) => {
@@ -296,7 +306,7 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
     }catch(error){next(error);}
   });
 
-  app.post("/api/v1/collection-submissions/:submissionId/photos", authenticate(database), requirePermission(database, "collections.submit"), privateUpload.array("attachments",5), async (req,res,next)=>{
+  app.post("/api/v1/collection-submissions/:submissionId/photos", authenticate(database), requirePermission(database, "collections.submit"), evidenceUploadLimiter, privateUpload.array("attachments",5), async (req,res,next)=>{
     const id=z.string().uuid().safeParse(req.params.submissionId);
     const auth=req.auth;
     const files=Array.isArray(req.files)?req.files:[];
