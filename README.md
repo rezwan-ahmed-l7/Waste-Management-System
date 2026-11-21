@@ -1,8 +1,8 @@
 # BAUST CSE Fest Waste Management System
 
-A full-stack operational platform to coordinate waste reporting, scheduled cleaning, collection, segregation, recycling, disposal, and event-level reporting for BAUST CSE Fest.
+A DBMS-first full-stack operational platform to coordinate waste reporting, scheduled cleaning, collection, segregation, recycling, disposal, and event-level reporting for BAUST CSE Fest.
 
-> **Status:** Planning baseline. Application implementation has not started.
+> **Status:** Implementation is in progress on `docs/project-blueprint`. Do not merge into `main` until all work and verification are complete and the owner approves.
 
 ## Product goals
 - Let attendees and staff report waste issues with location, category, description, and optional photo.
@@ -17,7 +17,7 @@ Administrator · Fest Organizer · Waste Manager · Team Lead · Volunteer/Colle
 
 ## Core modules
 1. Authentication, profiles, roles, and permissions.
-2. Waste reporting, review, duplicate handling, and status tracking.
+2. Anonymous waste reporting, secure tracking, review, duplicate handling, and status tracking.
 3. Fest zones, areas, and waste-bin inventory.
 4. Scheduled cleaning rounds and report-driven collection tasks.
 5. Teams, volunteer assignments, workload, and progress.
@@ -39,8 +39,11 @@ This is the planning baseline; exact dependency versions will be pinned in the i
 - [Implementation Plan](docs/IMPLEMENTATION_PLAN.md) — phases, dependencies, quality gates, agent rules, progress.
 - This README — overview, setup entry point, and current status.
 
+## Database-first workflow
+The PostgreSQL schema is maintained in `database/001_schema.sql`. Create a local `waste_management` database, apply the schema with `psql -v ON_ERROR_STOP=1 -d waste_management -f database/001_schema.sql`, then verify tables, constraints, views, and triggers using `database/README.md`.
+
 ## Local setup
-The executable setup commands will be added with the application scaffold. Expected prerequisites: Node.js 24.x, Git, and PostgreSQL. After the scaffold exists, the documented workflow will be: clone → install from lockfile → configure local environment → migrate/seed database → run web and API → execute tests.
+The executable application setup commands will be added with the application scaffold. Expected prerequisites: Node.js 24.x, Git, and PostgreSQL. After the scaffold exists, the documented workflow will be: clone → install from lockfile → configure local environment → migrate/seed database → run web and API → execute tests.
 
 Never commit real credentials, session secrets, database passwords, or private user-uploaded files. Only placeholder values belong in .env.example.
 
@@ -56,5 +59,6 @@ Never commit real credentials, session secrets, database passwords, or private u
 ## Delivery status
 - [x] Repository inspected; initial branch created.
 - [x] Documentation cross-verification (five-file limit, links, role/status alignment, workflows, and data integrity rules reviewed).
-- [ ] Stakeholder decisions confirmed before production.
+- [x] Single-fest scope, anonymous reporting, and English database naming confirmed.
+- [ ] PostgreSQL schema runtime verification.
 - [ ] Application scaffold and implementation.
