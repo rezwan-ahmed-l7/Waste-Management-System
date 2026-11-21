@@ -98,12 +98,12 @@ If a check fails: capture the error, identify root cause, fix the underlying iss
 
 ## 6. Branch and commit policy
 
-- main: stable baseline; no direct commits.
-- docs/project-blueprint: initial documentation-only work.
+- All project work stays on \`docs/project-blueprint\`, including schema, API, frontend, tests, documentation and CI.
+- Do not create feature branches, push commits to \`main\`, open an early merge, or rebase into \`main\`.
+- Keep \`main\` unchanged until every phase and final verification gate is complete.
+- Merge only after the project owner explicitly approves the final integration.
 - Use concise conventional commit prefixes: docs:, feat:, fix:, test:, refactor:, chore:.
 - Prefer logical commits; avoid one commit per trivial edit and avoid giant opaque commits.
-- PR description includes scope, design notes, test commands/results, UI screenshots when relevant, and migration notes.
-- Do not merge without explicit owner approval.
 
 ## 7. Definition of Done
 
@@ -125,8 +125,46 @@ A feature is done only when requirements and permissions are documented; UI/API/
 - [x] Add transactional database smoke-test script and CI PostgreSQL service.
 - [x] Add Node/TypeScript workspaces, Express API, Next.js web scaffold and shared Zod contract.
 - [x] Add public anonymous report submission and private token status endpoint.
-- [ ] Commit npm lockfile and pass clean-install CI.
-- [ ] Execute schema and smoke tests in CI; resolve any SQL/runtime failures.
+- [x] Commit npm lockfile and pass clean-install CI.
+- [x] Execute schema and smoke tests in CI; resolve any SQL/runtime failures.
 
-### Later phases
-Not started. Do not mark a phase complete until its exit-gate evidence exists.
+### Phase 2 — Identity and access progress
+- [x] Add password-hashed login, logout, current-session endpoint and server-side permission middleware.
+- [x] Add role assignment, administrator account creation, account suspension and session revocation.
+- [x] Protect the last active administrator from accidental removal or suspension.
+- [ ] Add broader authorization and session-expiry regression tests.
+
+### Phase 3 — Event and location progress
+- [x] Add single-fest configuration, zones, areas, bins and waste-category management APIs.
+- [x] Add manager-facing location management UI and inactive-location safeguards.
+- [ ] Add fest metadata editing UI and additional hierarchy/retention tests.
+
+### Phase 4 — Reporting progress
+- [x] Add anonymous report submission, private tracking tokens, review, duplicate linking and status history.
+- [x] Add public status timeline and public/internal manager notes.
+- [x] Add private report evidence uploads with content-signature checks and authorized downloads.
+- [ ] Add report evidence review UI and dedicated report lifecycle tests.
+
+### Phase 5 — Workforce and collection progress
+- [x] Add teams, memberships, cleaning rounds, collection tasks, assignments and volunteer task scoping.
+- [x] Add collection submissions, manager verification/rejection and authorized no-waste closure.
+- [x] Add private collection evidence uploads and manager-only access.
+- [ ] Add membership removal, deeper team-scope tests and end-to-end workflow tests.
+
+### Phase 6 — Material flow progress
+- [x] Create verified-only material batches automatically.
+- [x] Add segregation, destination and allocation APIs with database-enforced source balances.
+- [x] Add material balance views and manager-facing processing UI.
+- [ ] Add concurrent allocation tests and final reconciliation report.
+
+### Phase 7 — Notifications and analytics progress
+- [x] Add in-app notifications, announcements, role/zone targeting, analytics and CSV exports.
+- [x] Add manager dashboards for reports, tasks, teams, locations, rounds and materials.
+- [ ] Add final fest report and metric regression tests.
+
+### Phase 8 — Hardening and handover progress
+- [x] Add PostgreSQL CI service, schema verification, database smoke tests, dependency audit and production build checks.
+- [x] Resolve all npm audit findings in the locked dependency tree.
+- [ ] Add Playwright end-to-end journeys, backup/restore verification, deployment instructions and final security review.
+
+Do not mark a phase complete until its exit-gate evidence exists. A checked implementation item does not mean the whole phase is complete.
