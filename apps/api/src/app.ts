@@ -330,6 +330,202 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
     }
   });
 
+
+  const taskRead = [authenticate(database), requirePermission(database, "tasks.read")];
+  const taskScope = (userId: string, roles: string[]) => {
+    if (roles.some(role => ["administrator","waste_manager"].includes(role))) return { sql: "TRUE", values: [] as string[] };
+    if (roles.includes("team_lead")) {
+      return {
+        sql: "EXISTS (SELECT 1 FROM waste_mgmt.task_assignments ta LEFT JOIN waste_mgmt.teams tm ON tm.team_id=ta.team_id WHERE ta.task_id=t.task_id AND ta.unassigned_at IS NULL AND (ta.user_id=$1 OR tm.team_lead_user_id=$1))",
+        values: [userId]
+      };
+    }
+    return {
+      sql: "EXISTS (SELECT 1 FROM waste_mgmt.task_assignments ta LEFT JOIN waste_mgmt.team_memberships tm ON tm.team_id=ta.team_id AND tm.user_id=$1 AND tm.ends_at IS NULL WHERE ta.task_id=t.task_id AND ta.unassigned_at IS NULL AND (ta.user_id=$1 OR tm.user_id=$1))",
+      values: [userId]
+    };
+  };
+
+  app.get("/api/v1/tasks", ...taskRead, async (req, res, next) => {
+    const filters = z.object({
+      status: z.enum(["draft","open","assigned","in_progress","submitted_for_verification","verified","cancelled"]).optional(),
+      page: z.coerce.number().int().min(1).default(1),
+      pageSize: z.coerce.number().int().min(1).max(100).default(20)
+    }).safeParse(req.query);
+    if (!filters.success || !req.auth) {
+      res.status(400).json({ error: { code: "VALIDATION_ERROR", message: "Invalid task filters." } });
+      return;
+    }
+    try {
+      const scope = taskScope(req.auth.userId, req.auth.roles);
+      const conditions = ["t.fest_id=1", scope.sql];
+      const values: (string | number)[] = [...scope.values];
+      if (filters.data.status) {
+        values.push(filters.data.status);
+        conditions.push("t.status=$" + values.length);
+      }
+      const where = conditions.join(" AND ");
+      const count = await database.query(
+        "SELECT COUNT(*)::int AS total FROM waste_mgmt.collection_tasks t WHERE " + where,
+        values
+      );
+      const pageValues = [...values, filters.data.pageSize, (filters.data.page-1)*filters.data.pageSize];
+      const result = await database.query(
+        "SELECT t.task_id AS \"taskId\", t.title, t.priority, t.status, t.due_at AS \"dueAt\", " +
+        "t.created_at AS \"createdAt\", a.name AS \"areaName\", z.name AS \"zoneName\" " +
+        "FROM waste_mgmt.collection_tasks t JOIN waste_mgmt.areas a ON a.area_id=t.area_id " +
+        "JOIN waste_mgmt.zones z ON z.zone_id=a.zone_id WHERE " + where +
+        " ORDER BY t.due_at NULLS LAST, t.created_at DESC LIMIT $" + (values.length+1) +
+        " OFFSET $" + (values.length+2),
+        pageValues
+      );
+      res.status(200).json({ data: result.rows, meta: { page: filters.data.page, pageSize: filters.data.pageSize, total: count.rows[0]?.total ?? 0 } });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/v1/tasks/:taskId", ...taskRead, async (req, res, next) => {
+    const id = z.string().uuid().safeParse(req.params.taskId);
+    if (!id.success || !req.auth) {
+      res.status(404).json({ error: { code: "TASK_NOT_FOUND", message: "Task not found." } });
+      return;
+    }
+    try {
+      const scope = taskScope(req.auth.userId, req.auth.roles);
+      const result = await database.query(
+        "SELECT t.task_id AS \"taskId\", t.title, t.instructions, t.priority, t.status, t.due_at AS \"dueAt\", " +
+        "t.created_at AS \"createdAt\", t.started_at AS \"startedAt\", t.completed_at AS \"completedAt\", " +
+        "a.name AS \"areaName\", z.name AS \"zoneName\" " +
+        "FROM waste_mgmt.collection_tasks t JOIN waste_mgmt.areas a ON a.area_id=t.area_id " +
+        "JOIN waste_mgmt.zones z ON z.zone_id=a.zone_id WHERE t.task_id=$1 AND t.fest_id=1 AND " + scope.sql,
+        [id.data, ...scope.values]
+      );
+      if (!result.rows[0]) {
+        res.status(404).json({ error: { code: "TASK_NOT_FOUND", message: "Task not found." } });
+        return;
+      }
+      res.status(200).json({ data: result.rows[0] });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/v1/tasks", authenticate(database), requirePermission(database, "tasks.manage"), async (req, res, next) => {
+    const body = z.object({
+      areaId: z.string().uuid(),
+      title: z.string().trim().min(3).max(160),
+      instructions: z.string().trim().max(3000).optional(),
+      priority: z.enum(["low","normal","high","urgent"]).default("normal"),
+      dueAt: z.string().datetime().optional(),
+      reportId: z.string().uuid().optional(),
+      assignedUserId: z.string().uuid().optional(),
+      assignedTeamId: z.string().uuid().optional()
+    }).strict().safeParse(req.body);
+    if (!body.success || !req.auth) {
+      res.status(400).json({ error: { code: "VALIDATION_ERROR", message: "Invalid task details." } });
+      return;
+    }
+    if (body.data.assignedUserId && body.data.assignedTeamId) {
+      res.status(422).json({ error: { code: "INVALID_ASSIGNMENT", message: "Assign a task to one user or one team, not both." } });
+      return;
+    }
+    try {
+      const client = await database.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query("SELECT set_config('app.actor_user_id',$1,true)", [req.auth.userId]);
+        const area = await client.query(
+          "SELECT area_id FROM waste_mgmt.areas WHERE area_id=$1 AND fest_id=1 AND is_active=TRUE FOR SHARE",
+          [body.data.areaId]
+        );
+        if (area.rowCount !== 1) {
+          await client.query("ROLLBACK");
+          res.status(422).json({ error: { code: "INVALID_AREA", message: "The selected area is not active." } });
+          return;
+        }
+        if (body.data.reportId) {
+          const report = await client.query(
+            "SELECT report_id,status,area_id FROM waste_mgmt.waste_reports WHERE report_id=$1 AND fest_id=1 FOR UPDATE",
+            [body.data.reportId]
+          );
+          const row = report.rows[0];
+          if (!row || row.status !== "accepted" || row.area_id !== body.data.areaId) {
+            await client.query("ROLLBACK");
+            res.status(409).json({ error: { code: "REPORT_NOT_ACTIONABLE", message: "Only an accepted report in the same area can create a primary collection task." } });
+            return;
+          }
+        }
+        if (body.data.assignedUserId) {
+          const user = await client.query("SELECT user_id FROM waste_mgmt.users WHERE user_id=$1 AND status='active'",[body.data.assignedUserId]);
+          if (user.rowCount !== 1) {
+            await client.query("ROLLBACK");
+            res.status(422).json({ error: { code: "INVALID_ASSIGNEE", message: "The selected user is not active." } });
+            return;
+          }
+        }
+        if (body.data.assignedTeamId) {
+          const team = await client.query("SELECT team_id FROM waste_mgmt.teams WHERE team_id=$1 AND is_active=TRUE",[body.data.assignedTeamId]);
+          if (team.rowCount !== 1) {
+            await client.query("ROLLBACK");
+            res.status(422).json({ error: { code: "INVALID_TEAM", message: "The selected team is not active." } });
+            return;
+          }
+        }
+        const inserted = await client.query(
+          "INSERT INTO waste_mgmt.collection_tasks(fest_id,area_id,title,instructions,priority,due_at,created_by) " +
+          "VALUES (1,$1,$2,$3,$4,$5,$6) RETURNING task_id AS \"taskId\", status",
+          [body.data.areaId,body.data.title,body.data.instructions ?? null,body.data.priority,body.data.dueAt ?? null,req.auth.userId]
+        );
+        const task = inserted.rows[0];
+        if (!task) throw new Error("Task creation returned no row.");
+        await client.query(
+          "INSERT INTO waste_mgmt.task_status_history(task_id,from_status,to_status,changed_by) VALUES ($1,NULL,'open',$2)",
+          [task.taskId,req.auth.userId]
+        );
+        if (body.data.reportId) {
+          await client.query(
+            "INSERT INTO waste_mgmt.report_task_links(report_id,task_id,link_type,linked_by) VALUES ($1,$2,'primary',$3)",
+            [body.data.reportId,task.taskId,req.auth.userId]
+          );
+          await client.query(
+            "UPDATE waste_mgmt.waste_reports SET status='in_progress' WHERE report_id=$1",
+            [body.data.reportId]
+          );
+        }
+        if (body.data.assignedUserId || body.data.assignedTeamId) {
+          await client.query(
+            "INSERT INTO waste_mgmt.task_assignments(task_id,user_id,team_id,assigned_by) VALUES ($1,$2,$3,$4)",
+            [task.taskId,body.data.assignedUserId ?? null,body.data.assignedTeamId ?? null,req.auth.userId]
+          );
+          await client.query("UPDATE waste_mgmt.collection_tasks SET status='assigned' WHERE task_id=$1",[task.taskId]);
+          if (body.data.assignedUserId) {
+            await client.query(
+              "INSERT INTO waste_mgmt.notifications(user_id,type,title,body,resource_type,resource_id) VALUES ($1,'task_assignment','New collection task',$2,'task',$3)",
+              [body.data.assignedUserId,body.data.title,task.taskId]
+            );
+          } else if (body.data.assignedTeamId) {
+            await client.query(
+              "INSERT INTO waste_mgmt.notifications(user_id,type,title,body,resource_type,resource_id) " +
+              "SELECT user_id,'task_assignment','New team collection task',$2,'task',$3 " +
+              "FROM waste_mgmt.team_memberships WHERE team_id=$1 AND ends_at IS NULL",
+              [body.data.assignedTeamId,body.data.title,task.taskId]
+            );
+          }
+        }
+        await client.query("COMMIT");
+        res.status(201).json({ data: task });
+      } catch (error) {
+        await client.query("ROLLBACK").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.get("/api/v1/public/form-options", async (_req, res, next) => {
     try {
       const [areas, categories] = await Promise.all([
