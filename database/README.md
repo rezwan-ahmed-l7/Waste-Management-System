@@ -15,7 +15,7 @@ From the repository root:
 ```powershell
 psql -v ON_ERROR_STOP=1 -U postgres -d waste_management -f database/001_schema.sql
 ```
-The script creates the waste_mgmt schema, enum types, relational tables, keys, checks, indexes, triggers, views, and reference data. For a local runtime role, set `POSTGRES_USER=postgres`, `POSTGRES_DB=waste_management`, and a strong `APP_DB_PASSWORD`, then run `bash database/002_grants.sh` from Git Bash. It creates a non-superuser `waste_app` role with schema usage and table/sequence DML privileges. Set the API `DATABASE_URL` to this role rather than using the PostgreSQL superuser.
+The script creates the waste_mgmt schema, enum types, relational tables, keys, checks, indexes, triggers, views, and reference data. For a local runtime role, set `POSTGRES_USER=postgres`, `POSTGRES_DB=waste_management`, and a strong `APP_DB_PASSWORD`, then run `bash database/002_grants.sh` from Git Bash. The script expects a local TCP connection when run from the host; set `PGHOST=localhost` and `PGPASSWORD` for the PostgreSQL bootstrap superuser. Inside the Compose database initialization container, it uses the local socket. It creates a non-superuser `waste_app` role with schema usage and table/sequence DML privileges. Set the API `DATABASE_URL` to this role rather than using the PostgreSQL superuser.
 
 ## Verify
 ```sql
