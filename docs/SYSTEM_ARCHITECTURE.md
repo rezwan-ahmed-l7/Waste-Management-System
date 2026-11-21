@@ -86,32 +86,31 @@ Never trust client-supplied user identity, role, status, ownership, or calculate
 - Error: { error: { code, message, details, requestId } }.
 - Never expose stack traces, SQL details, secrets, internal paths, or raw provider errors.
 
-### Planned API surface (not yet implemented)
+### Implemented API surface
 
-Auth: POST /auth/login, POST /auth/logout, GET /auth/me.
+All routes are mounted under `/api/v1`. The current route inventory is visible in `apps/api/src/app.ts`; route groups are:
 
-Users: GET/POST /users, GET/PATCH /users/:id, PATCH /users/:id/status, PUT /users/:id/roles.
+- Authentication: login, logout, current session.
+- Reports: list/detail, start review, accept/reject, notes, private attachment listing/download.
+- Public reporting: form options, anonymous report submission, token-protected status tracking.
+- Identity administration: users, assignable users, roles, role assignment, account status.
+- Fest and locations: fest settings, zones, areas, bins, waste categories and active-state changes.
+- Workforce: teams, team memberships, cleaning rounds, round tasks, task list/detail, assignments, task start/cancel/no-waste closure.
+- Collection: submission creation, evidence photos, manager verification/rejection.
+- Material flow: overview, destinations, segregation and allocations.
+- Communications: announcements, notifications and read-state updates.
+- Analytics and operations: overview, CSV exports, audit logs, health and readiness.
 
-Locations: GET/POST /zones, GET/POST /areas, GET/PATCH /areas/:id, GET/POST /bins, PATCH /bins/:id.
-
-Reports: POST/GET /reports, GET /reports/:id, POST /reports/:id/review, POST /reports/:id/duplicate, POST /reports/:id/reopen.
-
-Workforce/collection: GET/POST /teams, POST /teams/:id/members, GET/POST /cleaning-rounds, GET/POST /tasks, GET /tasks/:id, POST /tasks/:id/assignments, POST /tasks/:id/start, POST /tasks/:id/collection-submissions, POST /tasks/:id/verification, POST /tasks/:id/cancel.
-
-Material: POST /collection-records/:id/segregations, POST /recycling-records, POST /disposal-records, GET /material-balances.
-
-Communications/analytics: GET /notifications, PATCH /notifications/:id/read, GET /dashboard/overview, GET /analytics/waste, GET /reports/export, GET /final-event-report.
-
-Final routes, DTOs, and permission names must be implemented and tested together.
+The first release intentionally does not expose public signup, password reset, SMS/WhatsApp delivery, live maps, volunteer availability scheduling, QR, offline sync, or a multi-fest API.
 
 ## 7. Authentication and security
 
 - Production traffic uses HTTPS; cookies are Secure, HttpOnly, and SameSite.
 - Rotate session identifiers after login and privilege changes; revoke on logout, password reset, or suspension.
-- Apply CSRF controls to cookie-authenticated mutations and validate trusted origins.
+- Cookie-authenticated mutations reject a mismatched Origin; the session cookie is HttpOnly and SameSite=Lax. Validate browser deployment topology and add an explicit CSRF token if the web/API origin model changes.
 - CORS allows configured origins only; never wildcard with credentials.
 - Hash passwords using maintained Argon2id implementation and reviewed parameters.
-- Rate-limit login, public report submission, and upload endpoints.
+- Rate-limit login and anonymous report submission. Add dedicated per-user upload throttling and production edge-level abuse controls before public launch.
 - Validate every request field and uploaded file; encode untrusted output.
 - Image uploads: allowlisted formats, inspect actual content type, enforce byte/dimension limits, server-generated names, private non-executable storage.
 - Evidence access is authorized; do not expose permanent public file URLs.
@@ -127,11 +126,11 @@ Audit is append-only at application level; corrections create compensating event
 
 ## 9. File storage
 
-Application code uses a storage adapter, not provider-specific calls. Development may use a private local directory; production uses private object storage and short-lived authorized URLs. PostgreSQL stores metadata (owner, resource, key, MIME type, size, checksum, created time), not image binaries.
+Application code uses a storage adapter, not provider-specific calls. Development currently uses a private local directory. Production still requires a persistent private volume or a reviewed private object-storage adapter; public/static file serving is not supported. PostgreSQL stores metadata (owner, resource, key, MIME type, size, checksum, created time), not image binaries.
 
 ## 10. Configuration and operations
 
-Validate environment variables at startup and fail fast with safe messages. Commit .env.example only with placeholders. Expected config includes DATABASE_URL, session secret, trusted web origin, API URL, storage mode, and upload limits. Production must not silently fall back to insecure auth or public storage.
+Validate environment variables at startup and fail fast with safe messages. Commit .env.example only with placeholders. Current config includes DATABASE_URL, API_HOST/API_PORT, WEB_ORIGIN, NEXT_PUBLIC_API_BASE_URL, PRIVATE_STORAGE_DIR and public-report rate limits. Session tokens are random and stored only as hashes; no static session secret is required. Production must not silently fall back to insecure auth or public storage.
 
 Use structured logs with request IDs; health and readiness endpoints; avoid logging report text, personal details, cookies, secrets, or file content. Document backup/restore and test restore before production.
 
