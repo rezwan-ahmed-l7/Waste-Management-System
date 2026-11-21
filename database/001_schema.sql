@@ -718,6 +718,15 @@ LEFT JOIN (
   GROUP BY source_batch_id
 ) direct_alloc ON direct_alloc.source_batch_id=mb.batch_id;
 
+CREATE VIEW v_segregation_balance AS
+SELECT sr.segregation_id, sr.source_batch_id, sr.output_category_id,
+       sr.weight_kg AS produced_weight_kg,
+       COALESCE(SUM(ma.weight_kg),0) AS allocated_weight_kg,
+       sr.weight_kg - COALESCE(SUM(ma.weight_kg),0) AS remaining_weight_kg
+FROM segregation_records sr
+LEFT JOIN material_allocations ma ON ma.source_segregation_id=sr.segregation_id
+GROUP BY sr.segregation_id, sr.source_batch_id, sr.output_category_id, sr.weight_kg;
+
 -- Reference data only. No seeded credentials or default administrator.
 INSERT INTO roles(role_key,display_name,description) VALUES
  ('administrator','Administrator','Full system administration'),
