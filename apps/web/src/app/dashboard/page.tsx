@@ -469,7 +469,9 @@ export default function DashboardPage() {
   const [adminUsers,setAdminUsers] = useState<AdminUser[]>([]);
   const [roles,setRoles] = useState<Role[]>([]);
   const [materials,setMaterials] = useState<MaterialOverview>({batches:[],segregations:[],destinations:[],allocations:[]});
-  const [rounds,setRounds] = useState<CleaningRound[]>([]);\n  const [fest,setFest] = useState<FestConfig|null>(null);\n  const [auditLogs,setAuditLogs] = useState<AuditLog[]>([]);
+  const [rounds,setRounds] = useState<CleaningRound[]>([]);
+  const [fest,setFest] = useState<FestConfig|null>(null);
+  const [auditLogs,setAuditLogs] = useState<AuditLog[]>([]);
   const [error,setError] = useState("");
   const [loading,setLoading] = useState(true);
   const [workingId,setWorkingId] = useState("");
@@ -509,7 +511,9 @@ export default function DashboardPage() {
     setAdminUsers(adminUserPayload ?? []);
     setRoles(rolePayload ?? []);
     setMaterials(materialPayload ?? {batches:[],segregations:[],destinations:[],allocations:[]});
-    setRounds(roundPayload ?? []);\n    setFest(festPayload ?? null);\n    setAuditLogs(auditPayload ?? []);
+    setRounds(roundPayload ?? []);
+    setFest(festPayload ?? null);
+    setAuditLogs(auditPayload ?? []);
   },[]);
 
   useEffect(() => {
@@ -581,7 +585,9 @@ export default function DashboardPage() {
         {error ? <p className="error" role="alert">{error}</p> : null}
 
 
-        {user.roles.includes("administrator") ? <UserAdmin users={adminUsers} roles={roles} onDone={()=>void loadData()} /> : null}\n        {fest ? <FestSettings fest={fest} onDone={()=>void loadData()} /> : null}\n        {user.roles.includes("administrator") ? <AuditLogViewer logs={auditLogs} /> : null}
+        {user.roles.includes("administrator") ? <UserAdmin users={adminUsers} roles={roles} onDone={()=>void loadData()} /> : null}
+        {fest ? <FestSettings fest={fest} onDone={()=>void loadData()} /> : null}
+        {user.roles.includes("administrator") ? <AuditLogViewer logs={auditLogs} /> : null}
         {canManageTasks ? <RoundManager rounds={rounds} areas={locations.areas} onDone={()=>void loadData()} /> : null}
         {canManageTasks ? <MaterialManager data={materials} categories={categories} onDone={()=>void loadData()} /> : null}
         {canManageTasks ? <LocationManager locations={locations} categories={categories} onDone={()=>void loadData()} /> : null}
