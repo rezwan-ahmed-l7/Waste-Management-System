@@ -564,6 +564,110 @@ FOR EACH ROW EXECUTE FUNCTION audit_row_change('submission_id');
 CREATE TRIGGER trg_audit_allocations AFTER INSERT OR UPDATE OR DELETE ON material_allocations
 FOR EACH ROW EXECUTE FUNCTION audit_row_change('allocation_id');
 
+
+-- Collection records are editable only while their parent submission is pending.
+CREATE FUNCTION guard_collection_record_mutation() RETURNS TRIGGER LANGUAGE plpgsql AS $fn$
+DECLARE v_submission_id UUID; v_status submission_status;
+BEGIN
+  IF TG_OP='DELETE' THEN
+    v_submission_id := OLD.submission_id;
+  ELSE
+    v_submission_id := NEW.submission_id;
+  END IF;
+  IF TG_OP='UPDATE' AND NEW.submission_id <> OLD.submission_id THEN
+    RAISE EXCEPTION 'A collection record cannot be moved to another submission';
+  END IF;
+  SELECT status INTO v_status FROM collection_submissions
+    WHERE submission_id=v_submission_id FOR UPDATE;
+  IF v_status IS DISTINCT FROM 'submitted' THEN
+    RAISE EXCEPTION 'Collection records can only be changed while the submission is pending';
+  END IF;
+  IF TG_OP='DELETE' THEN RETURN OLD; END IF;
+  RETURN NEW;
+END; $fn$;
+CREATE TRIGGER trg_collection_record_mutation
+BEFORE INSERT OR UPDATE OR DELETE ON collection_records
+FOR EACH ROW EXECUTE FUNCTION guard_collection_record_mutation();
+
+-- A submission can be decided only once, and approval requires at least one weight record.
+CREATE FUNCTION validate_submission_decision() RETURNS TRIGGER LANGUAGE plpgsql AS $fn$
+BEGIN
+  IF NEW.status IS DISTINCT FROM OLD.status THEN
+    IF OLD.status <> 'submitted' OR NEW.status NOT IN ('verified','rejected') THEN
+      RAISE EXCEPTION 'Invalid collection submission status transition';
+    END IF;
+    IF NEW.status='verified' AND NOT EXISTS (
+      SELECT 1 FROM collection_records WHERE submission_id=NEW.submission_id
+    ) THEN
+      RAISE EXCEPTION 'A collection submission needs at least one weight record before verification';
+    END IF;
+  END IF;
+  RETURN NEW;
+END; $fn$;
+CREATE TRIGGER trg_submission_decision_guard
+BEFORE UPDATE OF status ON collection_submissions
+FOR EACH ROW EXECUTE FUNCTION validate_submission_decision();
+
+-- Enforce report lifecycle and automatically preserve every status transition.
+CREATE FUNCTION enforce_report_transition() RETURNS TRIGGER LANGUAGE plpgsql AS $fn$
+DECLARE v_allowed BOOLEAN := FALSE; v_actor UUID;
+BEGIN
+  IF NEW.status IS NOT DISTINCT FROM OLD.status THEN RETURN NEW; END IF;
+  v_allowed := CASE OLD.status
+    WHEN 'submitted' THEN NEW.status IN ('under_review','cancelled')
+    WHEN 'under_review' THEN NEW.status IN ('accepted','rejected','duplicate','cancelled')
+    WHEN 'accepted' THEN NEW.status IN ('in_progress','resolved','cancelled')
+    WHEN 'in_progress' THEN NEW.status IN ('resolved','cancelled')
+    WHEN 'resolved' THEN NEW.status IN ('in_progress','cancelled')
+    ELSE FALSE
+  END;
+  IF NOT v_allowed THEN
+    RAISE EXCEPTION 'Invalid report status transition: % -> %', OLD.status, NEW.status;
+  END IF;
+  IF NEW.status IN ('rejected','cancelled') AND NULLIF(btrim(NEW.review_reason),'') IS NULL THEN
+    RAISE EXCEPTION 'A reason is required when rejecting or cancelling a report';
+  END IF;
+  IF OLD.status='resolved' AND NEW.status='in_progress' AND NULLIF(btrim(NEW.review_reason),'') IS NULL THEN
+    RAISE EXCEPTION 'A reason is required to reopen a resolved report';
+  END IF;
+  v_actor := NULLIF(current_setting('app.actor_user_id',TRUE),'')::UUID;
+  INSERT INTO report_status_history(report_id,from_status,to_status,changed_by,reason,is_public)
+  VALUES (NEW.report_id,OLD.status,NEW.status,v_actor,NEW.review_reason,TRUE);
+  RETURN NEW;
+END; $fn$;
+CREATE TRIGGER trg_report_status_transition
+BEFORE UPDATE OF status ON waste_reports
+FOR EACH ROW EXECUTE FUNCTION enforce_report_transition();
+
+-- Enforce task lifecycle and preserve status history.
+CREATE FUNCTION enforce_task_transition() RETURNS TRIGGER LANGUAGE plpgsql AS $fn$
+DECLARE v_allowed BOOLEAN := FALSE; v_actor UUID;
+BEGIN
+  IF NEW.status IS NOT DISTINCT FROM OLD.status THEN RETURN NEW; END IF;
+  v_allowed := CASE OLD.status
+    WHEN 'draft' THEN NEW.status IN ('open','cancelled')
+    WHEN 'open' THEN NEW.status IN ('assigned','in_progress','cancelled')
+    WHEN 'assigned' THEN NEW.status IN ('open','in_progress','cancelled')
+    WHEN 'in_progress' THEN NEW.status IN ('submitted_for_verification','verified','cancelled')
+    WHEN 'submitted_for_verification' THEN NEW.status IN ('in_progress','verified','cancelled')
+    ELSE FALSE
+  END;
+  IF NOT v_allowed THEN
+    RAISE EXCEPTION 'Invalid task status transition: % -> %', OLD.status, NEW.status;
+  END IF;
+  IF NEW.status='cancelled' AND NULLIF(btrim(NEW.cancellation_reason),'') IS NULL THEN
+    RAISE EXCEPTION 'A reason is required when cancelling a task';
+  END IF;
+  v_actor := NULLIF(current_setting('app.actor_user_id',TRUE),'')::UUID;
+  INSERT INTO task_status_history(task_id,from_status,to_status,changed_by,reason)
+  VALUES (NEW.task_id,OLD.status,NEW.status,v_actor,
+    CASE WHEN NEW.status='cancelled' THEN NEW.cancellation_reason ELSE NEW.closure_reason END);
+  RETURN NEW;
+END; $fn$;
+CREATE TRIGGER trg_task_status_transition
+BEFORE UPDATE OF status ON collection_tasks
+FOR EACH ROW EXECUTE FUNCTION enforce_task_transition();
+
 -- Views are read models, not authorization boundaries.
 CREATE VIEW v_report_overview AS
 SELECT r.report_id, r.submitted_at, r.status, r.priority, r.is_anonymous,
