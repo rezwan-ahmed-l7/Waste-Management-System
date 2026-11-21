@@ -543,7 +543,8 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
       const client=await database.connect();
       try{
         await client.query("BEGIN");
-        await client.query("UPDATE waste_mgmt.zones SET is_active=$1 WHERE zone_id=$2 AND fest_id=1",[body.data.isActive,id.data]);
+        const updated = await client.query("UPDATE waste_mgmt.zones SET is_active=$1 WHERE zone_id=$2 AND fest_id=1",[body.data.isActive,id.data]);
+        if (updated.rowCount !== 1) { await client.query("ROLLBACK"); res.status(404).json({error:{code:"ZONE_NOT_FOUND",message:"Zone not found."}}); return; }
         if(!body.data.isActive){
           await client.query("UPDATE waste_mgmt.areas SET is_active=FALSE WHERE zone_id=$1",[id.data]);
           await client.query("UPDATE waste_mgmt.bins SET is_active=FALSE WHERE area_id IN (SELECT area_id FROM waste_mgmt.areas WHERE zone_id=$1)",[id.data]);
@@ -563,8 +564,23 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
       const client=await database.connect();
       try{
         await client.query("BEGIN");
-        await client.query("UPDATE waste_mgmt.areas SET is_active=$1 WHERE area_id=$2 AND fest_id=1",[body.data.isActive,id.data]);
-        if(!body.data.isActive)await client.query("UPDATE waste_mgmt.bins SET is_active=FALSE WHERE area_id=$1",[id.data]);
+        const updated = await client.query("UPDATE waste_mgmt.areas SET is_active=$1 WHERE area_id=$2 AND fest_id=1",[body.data.isActive,id.data]);
+        if (updated.rowCount !== 1) { await client.query("ROLLBACK"); res.status(404).json({error:{code:"AREA_NOT_FOUND",message:"Area not found."}}); return; }
+        if(!body.data.isActive){
+          await client.query(
+            "WITH RECURSIVE descendants(area_id) AS (SELECT area_id FROM waste_mgmt.areas WHERE area_id=$1 " +
+            "UNION ALL SELECT child.area_id FROM waste_mgmt.areas child JOIN descendants parent ON child.parent_area_id=parent.area_id) " +
+            "UPDATE waste_mgmt.areas SET is_active=FALSE WHERE area_id IN (SELECT area_id FROM descendants)",
+            [id.data]
+          );
+          await client.query(
+            "UPDATE waste_mgmt.bins SET is_active=FALSE WHERE area_id IN " +
+            "(WITH RECURSIVE descendants(area_id) AS (SELECT area_id FROM waste_mgmt.areas WHERE area_id=$1 " +
+            "UNION ALL SELECT child.area_id FROM waste_mgmt.areas child JOIN descendants parent ON child.parent_area_id=parent.area_id) " +
+            "SELECT area_id FROM descendants)",
+            [id.data]
+          );
+        }
         await client.query("COMMIT");
         res.status(200).json({data:{areaId:id.data,isActive:body.data.isActive}});
       }catch(error){await client.query("ROLLBACK").catch(()=>undefined);throw error;}
