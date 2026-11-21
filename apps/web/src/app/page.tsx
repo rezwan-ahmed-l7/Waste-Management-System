@@ -1,3 +1,5 @@
+import { ReportPortal } from "./report-portal";
+
 const workflow = [
   ["01", "Report", "Submit a waste issue anonymously with its location, category, and an optional description."],
   ["02", "Coordinate", "The waste team reviews reports and assigns cleaning work to volunteers."],
@@ -46,6 +48,7 @@ export default function HomePage() {
             ))}
           </div>
         </section>
+        <ReportPortal />
       </main>
       <footer className="footer"><div className="container">BAUST CSE Fest Waste Management System · Responsible operations, measurable outcomes.</div></footer>
     </>
