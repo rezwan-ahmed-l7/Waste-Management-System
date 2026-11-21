@@ -78,7 +78,7 @@ The API and web containers run as UID 1000 and are not published directly; Caddy
 - [x] Location/category administration, teams, memberships, rounds, tasks, assignments, collection submissions and manager decisions implemented.
 - [x] Verified-only material batches, segregation, destinations, allocations and database balance guards implemented.
 - [x] In-app notifications, announcements, analytics, date-scoped printable final fest report, CSV exports, fest settings and audit-log screens implemented.
-- [x] CI passed on 2026-11-21 for commit `f879b7237e8e4e63cee4441e07be04ce5c561a58`: clean `npm ci`, `npm audit` (0 advisories), typecheck, lint, 11 Vitest tests, PostgreSQL 16 schema verification, database smoke tests, reporting SQL, PostgreSQL 16 dump/restore round-trip verification and production build.
+- [x] CI passed on 2026-11-21 for commit `f879b7237e8e4e63cee4441e07be04ce5c561a58`: clean `npm ci`, `npm audit` (0 advisories), typecheck, lint, 17 Vitest tests, PostgreSQL 16 schema verification, database smoke tests, reporting SQL, PostgreSQL 16 dump/restore round-trip verification and production build.
 - [ ] Expand role/resource authorization and lifecycle regression coverage; add browser-level journeys.
 - [x] CI verifies PostgreSQL backup/restore and a two-connection concurrent-allocation race; production file+database restore and deployment still require operator configuration.
 - [ ] Complete operational security review and confirm fest-specific settings, privacy/retention policy, hosting and persistent private storage before production use.
