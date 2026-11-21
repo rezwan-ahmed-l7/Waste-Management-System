@@ -412,6 +412,121 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
     }
   });
 
+
+  app.post("/api/v1/tasks/:taskId/start", authenticate(database), requirePermission(database, "tasks.execute"), async (req, res, next) => {
+    const id = z.string().uuid().safeParse(req.params.taskId);
+    const auth = req.auth;
+    if (!id.success || !auth) {
+      res.status(404).json({ error: { code: "TASK_NOT_FOUND", message: "Task not found." } });
+      return;
+    }
+    try {
+      const scope = taskScope(auth.userId, auth.roles, 2);
+      const current = await database.query(
+        "SELECT t.task_id,t.status FROM waste_mgmt.collection_tasks t " +
+        "WHERE t.task_id=$1 AND t.fest_id=1 AND " + scope.sql,
+        [id.data,...scope.values]
+      );
+      const task = current.rows[0];
+      if (!task) {
+        res.status(404).json({ error: { code: "TASK_NOT_FOUND", message: "Task not found." } });
+        return;
+      }
+      if (task.status === "in_progress") {
+        res.status(200).json({ data: { taskId: id.data, status: "in_progress" } });
+        return;
+      }
+      if (task.status !== "assigned") {
+        res.status(409).json({ error: { code: "INVALID_TASK_STATE", message: "Only assigned tasks can be started." } });
+        return;
+      }
+      await database.query(
+        "UPDATE waste_mgmt.collection_tasks SET status='in_progress', started_at=COALESCE(started_at,now()) WHERE task_id=$1",
+        [id.data]
+      );
+      res.status(200).json({ data: { taskId: id.data, status: "in_progress" } });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/v1/tasks/:taskId/submissions", authenticate(database), requirePermission(database, "collections.submit"), async (req, res, next) => {
+    const id = z.string().uuid().safeParse(req.params.taskId);
+    const body = z.object({
+      notes: z.string().trim().max(2000).optional(),
+      records: z.array(z.object({
+        categoryId: z.coerce.number().int().positive(),
+        enteredWeight: z.coerce.number().positive().max(10000000),
+        enteredUnit: z.enum(["kg","g"]),
+        measurementMethod: z.enum(["weighing_scale","estimated","count_converted"]),
+        notes: z.string().trim().max(500).optional()
+      }).strict()).min(1).max(20)
+    }).strict().safeParse(req.body);
+    const auth = req.auth;
+    if (!id.success || !body.success || !auth) {
+      res.status(400).json({ error: { code: "VALIDATION_ERROR", message: "Invalid collection submission." } });
+      return;
+    }
+    try {
+      const client = await database.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query("SELECT set_config('app.actor_user_id',$1,true)",[auth.userId]);
+        const scope = taskScope(auth.userId,auth.roles,2);
+        const taskResult = await client.query(
+          "SELECT t.task_id,t.status FROM waste_mgmt.collection_tasks t WHERE t.task_id=$1 AND t.fest_id=1 AND " + scope.sql + " FOR UPDATE",
+          [id.data,...scope.values]
+        );
+        const task = taskResult.rows[0];
+        if (!task) {
+          await client.query("ROLLBACK");
+          res.status(404).json({ error: { code: "TASK_NOT_FOUND", message: "Task not found." } });
+          return;
+        }
+        if (task.status !== "in_progress") {
+          await client.query("ROLLBACK");
+          res.status(409).json({ error: { code: "INVALID_TASK_STATE", message: "Start the assigned task before submitting collection evidence." } });
+          return;
+        }
+        const inserted = await client.query(
+          "INSERT INTO waste_mgmt.collection_submissions(task_id,submitted_by,notes) VALUES ($1,$2,$3) RETURNING submission_id AS \"submissionId\"",
+          [id.data,auth.userId,body.data.notes ?? null]
+        );
+        const submissionId = inserted.rows[0]?.submissionId;
+        if (!submissionId) throw new Error("Collection submission could not be created.");
+        for (const record of body.data.records) {
+          const weightKg = record.enteredUnit === "kg" ? record.enteredWeight : record.enteredWeight / 1000;
+          await client.query(
+            "INSERT INTO waste_mgmt.collection_records(submission_id,category_id,entered_weight,entered_unit,weight_kg,measurement_method,notes) " +
+            "VALUES ($1,$2,$3,$4,$5,$6,$7)",
+            [submissionId,record.categoryId,record.enteredWeight,record.enteredUnit,weightKg.toFixed(3),record.measurementMethod,record.notes ?? null]
+          );
+        }
+        await client.query(
+          "UPDATE waste_mgmt.collection_tasks SET status='submitted_for_verification', submitted_at=now() WHERE task_id=$1",
+          [id.data]
+        );
+        await client.query(
+          "INSERT INTO waste_mgmt.notifications(user_id,type,title,body,resource_type,resource_id) " +
+          "SELECT ur.user_id,'task_update','Collection awaiting verification',$2,'task',$3 " +
+          "FROM waste_mgmt.user_roles ur JOIN waste_mgmt.roles r ON r.role_id=ur.role_id " +
+          "JOIN waste_mgmt.users u ON u.user_id=ur.user_id AND u.status='active' " +
+          "WHERE r.role_key IN ('administrator','waste_manager')",
+          ["A volunteer submitted collection evidence for review.",id.data]
+        );
+        await client.query("COMMIT");
+        res.status(201).json({ data: { submissionId, taskId: id.data, status: "submitted" } });
+      } catch (error) {
+        await client.query("ROLLBACK").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.post("/api/v1/tasks", authenticate(database), requirePermission(database, "tasks.manage"), async (req, res, next) => {
     const body = z.object({
       areaId: z.string().uuid(),
