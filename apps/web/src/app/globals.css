@@ -112,3 +112,17 @@ h1 { max-width: 720px; margin: 14px 0 18px; font-size: clamp(38px, 6vw, 64px); l
 .notificationCard.unread { border-left:4px solid var(--green); }
 .notificationCard.read { opacity:.75; }
 @media(max-width:760px){.metricGrid{grid-template-columns:repeat(2,1fr)}.analyticsColumns{grid-template-columns:1fr}.notificationCard{align-items:flex-start;flex-direction:column}}
+
+.locationForms { display:grid; grid-template-columns:repeat(2,1fr); gap:12px; }
+.locationForms .formCard { box-shadow:none; padding:16px; gap:10px; }
+.locationForms .formCard h3 { font-size:16px; }
+.locationForms input, .locationForms select { width:100%; min-width:0; padding:10px; border:1px solid var(--line); border-radius:8px; }
+.locationForms .checkLabel { display:flex; align-items:center; gap:8px; font-size:12px; }
+.locationForms .checkLabel input { width:auto; }
+.locationInventory { display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-top:14px; }
+.locationInventory .panel { box-shadow:none; }
+.inventoryLine { display:flex; justify-content:space-between; align-items:center; gap:12px; border-bottom:1px solid var(--line); padding:9px 0; font-size:12px; }
+.inventoryLine:last-child { border-bottom:0; }
+.inventoryLine span { color:var(--muted); text-align:right; }
+.inventoryLine.nested { padding-left:18px; }
+@media(max-width:760px){.locationForms,.locationInventory{grid-template-columns:1fr}}
