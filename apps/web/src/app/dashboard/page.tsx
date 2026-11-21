@@ -306,7 +306,9 @@ export default function DashboardPage() {
   const [notifications,setNotifications] = useState<Notification[]>([]);
   const [announcements,setAnnouncements] = useState<Announcement[]>([]);
   const [analytics,setAnalytics] = useState<Analytics | null>(null);
-  const [locations,setLocations] = useState<LocationData>({zones:[],areas:[],bins:[]});\n  const [adminUsers,setAdminUsers] = useState<AdminUser[]>([]);\n  const [roles,setRoles] = useState<Role[]>([]);
+  const [locations,setLocations] = useState<LocationData>({zones:[],areas:[],bins:[]});
+  const [adminUsers,setAdminUsers] = useState<AdminUser[]>([]);
+  const [roles,setRoles] = useState<Role[]>([]);
   const [error,setError] = useState("");
   const [loading,setLoading] = useState(true);
   const [workingId,setWorkingId] = useState("");
@@ -337,7 +339,9 @@ export default function DashboardPage() {
     setNotifications(notificationPayload ?? []);
     setAnnouncements(announcementPayload ?? []);
     setAnalytics(analyticsPayload ?? null);
-    setLocations(locationPayload ?? {zones:[],areas:[],bins:[]});\n    setAdminUsers(adminUserPayload ?? []);\n    setRoles(rolePayload ?? []);
+    setLocations(locationPayload ?? {zones:[],areas:[],bins:[]});
+    setAdminUsers(adminUserPayload ?? []);
+    setRoles(rolePayload ?? []);
   },[]);
 
   useEffect(() => {
@@ -409,7 +413,8 @@ export default function DashboardPage() {
         {error ? <p className="error" role="alert">{error}</p> : null}
 
 
-        {user.roles.includes("administrator") ? <UserAdmin users={adminUsers} roles={roles} onDone={()=>void loadData()} /> : null}\n        {canManageTasks ? <LocationManager locations={locations} categories={categories} onDone={()=>void loadData()} /> : null}
+        {user.roles.includes("administrator") ? <UserAdmin users={adminUsers} roles={roles} onDone={()=>void loadData()} /> : null}
+        {canManageTasks ? <LocationManager locations={locations} categories={categories} onDone={()=>void loadData()} /> : null}
 
         {analytics ? <section className="workspaceSection">
           <div className="sectionHeading"><div><div className="eyebrow">Live database metrics</div><h2>Fest overview</h2></div></div>
