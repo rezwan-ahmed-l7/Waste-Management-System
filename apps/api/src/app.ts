@@ -508,8 +508,9 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
           } else if (body.data.assignedTeamId) {
             await client.query(
               "INSERT INTO waste_mgmt.notifications(user_id,type,title,body,resource_type,resource_id) " +
-              "SELECT user_id,'task_assignment','New team collection task',$2,'task',$3 " +
-              "FROM waste_mgmt.team_memberships WHERE team_id=$1 AND ends_at IS NULL",
+              "SELECT tm.user_id,'task_assignment','New team collection task',$2,'task',$3 " +
+              "FROM waste_mgmt.team_memberships tm JOIN waste_mgmt.users u ON u.user_id=tm.user_id AND u.status='active' " +
+              "WHERE tm.team_id=$1 AND tm.ends_at IS NULL AND tm.starts_at<=now()",
               [body.data.assignedTeamId,body.data.title,task.taskId]
             );
           }
