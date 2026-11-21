@@ -28,9 +28,9 @@ Administrator · Fest Organizer · Waste Manager · Team Lead · Volunteer/Colle
 Advanced QR, live map, SMS/WhatsApp, offline sync, IoT, and AI classification are deferred until core operations are stable.
 
 ## Planned stack
-Node.js 24.x · TypeScript · Next.js (web) · Express 5 (API) · PostgreSQL · Prisma · server-managed sessions · Vitest/Supertest/Playwright · GitHub Actions.
+Node.js 24.x · TypeScript · Next.js (web) · Express 5 (API) · PostgreSQL · parameterized SQL via pg · server-managed sessions · Vitest/Supertest/Playwright · GitHub Actions.
 
-This is the planning baseline; exact dependency versions will be pinned in the implementation lockfile. The API is the business-rule and authorization boundary. The first release uses a modular monolith, not microservices.
+Direct dependency versions are pinned in workspace manifests. The npm lockfile and clean-install verification remain outstanding. The API is the business-rule and authorization boundary. The first release uses a modular monolith, not microservices.
 
 ## Documentation (five files maximum)
 - [Project Specification](docs/PROJECT_SPECIFICATION.md) — scope, roles, requirements, workflows, business rules, acceptance criteria.
@@ -43,7 +43,7 @@ This is the planning baseline; exact dependency versions will be pinned in the i
 The PostgreSQL schema is maintained in `database/001_schema.sql`. Create a local `waste_management` database, apply the schema with `psql -v ON_ERROR_STOP=1 -d waste_management -f database/001_schema.sql`, then verify tables, constraints, views, and triggers using `database/README.md`.
 
 ## Local setup
-The executable application setup commands will be added with the application scaffold. Expected prerequisites: Node.js 24.x, Git, and PostgreSQL. After the scaffold exists, the documented workflow will be: clone → install from lockfile → configure local environment → migrate/seed database → run web and API → execute tests.
+Prerequisites: Node.js 24.x, npm, Git, and PostgreSQL 15+. Run `npm install`, copy `.env.example` to `.env`, set `DATABASE_URL`, create the `waste_management` database, and apply `database/001_schema.sql`. Start the API with `npm run dev:api` and the web app with `npm run dev:web`. Run `npm run typecheck`, `npm run lint`, `npm test`, `npm run db:verify`, and `npm run build`.
 
 Never commit real credentials, session secrets, database passwords, or private user-uploaded files. Only placeholder values belong in .env.example.
 
@@ -61,4 +61,5 @@ Never commit real credentials, session secrets, database passwords, or private u
 - [x] Documentation cross-verification (five-file limit, links, role/status alignment, workflows, and data integrity rules reviewed).
 - [x] Single-fest scope, anonymous reporting, and English database naming confirmed.
 - [ ] PostgreSQL schema runtime verification.
-- [ ] Application scaffold and implementation.
+- [x] Initial web/API workspace and anonymous reporting vertical slice scaffolded.
+- [ ] Complete remaining application modules and verification.
