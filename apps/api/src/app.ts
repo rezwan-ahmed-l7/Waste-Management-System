@@ -464,6 +464,131 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
 
 
 
+
+  app.get("/api/v1/roles", authenticate(database), requirePermission(database, "users.manage"), async (_req,res,next)=>{
+    try{
+      const result=await database.query("SELECT role_id AS \"roleId\",role_key AS \"roleKey\",display_name AS \"displayName\",description FROM waste_mgmt.roles ORDER BY role_id");
+      res.status(200).json({data:result.rows});
+    }catch(error){next(error);}
+  });
+
+  app.get("/api/v1/users", authenticate(database), requirePermission(database, "users.manage"), async (_req,res,next)=>{
+    try{
+      const result=await database.query(
+        "SELECT u.user_id AS \"userId\",u.full_name AS \"fullName\",u.normalized_email AS email,u.phone_number AS \"phoneNumber\",u.status,u.created_at AS \"createdAt\", " +
+        "COALESCE(array_agg(DISTINCT r.role_key) FILTER (WHERE r.role_key IS NOT NULL),ARRAY[]::text[]) AS roles " +
+        "FROM waste_mgmt.users u LEFT JOIN waste_mgmt.user_roles ur ON ur.user_id=u.user_id " +
+        "LEFT JOIN waste_mgmt.roles r ON r.role_id=ur.role_id GROUP BY u.user_id ORDER BY u.created_at DESC LIMIT 500"
+      );
+      res.status(200).json({data:result.rows});
+    }catch(error){next(error);}
+  });
+
+  app.post("/api/v1/users", authenticate(database), requirePermission(database, "users.manage"), async (req,res,next)=>{
+    const body=z.object({
+      fullName:z.string().trim().min(2).max(120),
+      email:z.string().trim().email().max(254),
+      password:z.string().min(14).max(128),
+      roleIds:z.array(z.coerce.number().int().positive()).min(1).max(10)
+    }).strict().safeParse(req.body);
+    if(!body.success){res.status(400).json({error:{code:"VALIDATION_ERROR",message:"Invalid user details. Password must be at least 14 characters."}});return;}
+    try{
+      const client=await database.connect();
+      try{
+        await client.query("BEGIN");
+        const roles=await client.query("SELECT role_id FROM waste_mgmt.roles WHERE role_id=ANY($1::smallint[])",[body.data.roleIds]);
+        if(roles.rowCount!==new Set(body.data.roleIds).size){
+          await client.query("ROLLBACK");
+          res.status(422).json({error:{code:"INVALID_ROLES",message:"One or more selected roles do not exist."}});
+          return;
+        }
+        const passwordHash=await argon2.hash(body.data.password,{type:argon2.argon2id});
+        const user=await client.query(
+          "INSERT INTO waste_mgmt.users(full_name,email,password_hash) VALUES ($1,$2,$3) RETURNING user_id AS \"userId\",full_name AS \"fullName\",normalized_email AS email,status",
+          [body.data.fullName,body.data.email,passwordHash]
+        );
+        const userId=user.rows[0]?.userId;
+        if(!userId)throw new Error("User account could not be created.");
+        for(const roleId of new Set(body.data.roleIds)){
+          await client.query("INSERT INTO waste_mgmt.user_roles(user_id,role_id,assigned_by) VALUES ($1,$2,$3)",[userId,roleId,req.auth?.userId]);
+        }
+        await client.query("COMMIT");
+        res.status(201).json({data:user.rows[0]});
+      }catch(error){await client.query("ROLLBACK").catch(()=>undefined);throw error;}
+      finally{client.release();}
+    }catch(error){next(error);}
+  });
+
+  app.patch("/api/v1/users/:userId/status", authenticate(database), requirePermission(database, "users.manage"), async (req,res,next)=>{
+    const id=z.string().uuid().safeParse(req.params.userId);
+    const body=z.object({status:z.enum(["active","suspended","disabled"])}).strict().safeParse(req.body);
+    if(!id.success||!body.success){res.status(400).json({error:{code:"VALIDATION_ERROR",message:"Invalid account status update."}});return;}
+    try{
+      const client=await database.connect();
+      try{
+        await client.query("BEGIN");
+        const updated=await client.query(
+          "UPDATE waste_mgmt.users SET status=$1 WHERE user_id=$2 RETURNING user_id AS \"userId\",status",
+          [body.data.status,id.data]
+        );
+        if(!updated.rows[0]){
+          await client.query("ROLLBACK");
+          res.status(404).json({error:{code:"USER_NOT_FOUND",message:"User not found."}});
+          return;
+        }
+        if(body.data.status!=="active")await client.query("UPDATE waste_mgmt.sessions SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL",[id.data]);
+        await client.query("COMMIT");
+        res.status(200).json({data:updated.rows[0]});
+      }catch(error){await client.query("ROLLBACK").catch(()=>undefined);throw error;}
+      finally{client.release();}
+    }catch(error){next(error);}
+  });
+
+  app.put("/api/v1/users/:userId/roles", authenticate(database), requirePermission(database, "users.manage"), async (req,res,next)=>{
+    const id=z.string().uuid().safeParse(req.params.userId);
+    const body=z.object({roleIds:z.array(z.coerce.number().int().positive()).min(1).max(10)}).strict().safeParse(req.body);
+    const auth=req.auth;
+    if(!id.success||!body.success||!auth){res.status(400).json({error:{code:"VALIDATION_ERROR",message:"Invalid role assignment."}});return;}
+    try{
+      const client=await database.connect();
+      try{
+        await client.query("BEGIN");
+        const roleRows=await client.query("SELECT role_id,role_key FROM waste_mgmt.roles WHERE role_id=ANY($1::smallint[])",[body.data.roleIds]);
+        if(roleRows.rowCount!==new Set(body.data.roleIds).size){
+          await client.query("ROLLBACK");
+          res.status(422).json({error:{code:"INVALID_ROLES",message:"One or more selected roles do not exist."}});
+          return;
+        }
+        const hasAdmin=roleRows.rows.some((role:{role_id:number;role_key:string})=>role.role_key==="administrator");
+        if(id.data===auth.userId&&!hasAdmin){
+          await client.query("ROLLBACK");
+          res.status(409).json({error:{code:"SELF_LOCKOUT_PREVENTED",message:"You cannot remove your own Administrator role."}});
+          return;
+        }
+        const currentAdmin=await client.query(
+          "SELECT EXISTS(SELECT 1 FROM waste_mgmt.user_roles ur JOIN waste_mgmt.roles r ON r.role_id=ur.role_id WHERE ur.user_id=$1 AND r.role_key='administrator') AS is_admin",
+          [id.data]
+        );
+        if(currentAdmin.rows[0]?.is_admin&&!hasAdmin){
+          const count=await client.query("SELECT COUNT(*)::int AS total FROM waste_mgmt.user_roles ur JOIN waste_mgmt.roles r ON r.role_id=ur.role_id WHERE r.role_key='administrator'");
+          if(Number(count.rows[0]?.total??0)<=1){
+            await client.query("ROLLBACK");
+            res.status(409).json({error:{code:"LAST_ADMIN_PROTECTED",message:"The last Administrator account cannot lose its role."}});
+            return;
+          }
+        }
+        await client.query("DELETE FROM waste_mgmt.user_roles WHERE user_id=$1",[id.data]);
+        for(const roleId of new Set(body.data.roleIds)){
+          await client.query("INSERT INTO waste_mgmt.user_roles(user_id,role_id,assigned_by) VALUES ($1,$2,$3)",[id.data,roleId,auth.userId]);
+        }
+        await client.query("UPDATE waste_mgmt.sessions SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL",[id.data]);
+        await client.query("COMMIT");
+        res.status(200).json({data:{userId:id.data,roleIds:[...new Set(body.data.roleIds)]}});
+      }catch(error){await client.query("ROLLBACK").catch(()=>undefined);throw error;}
+      finally{client.release();}
+    }catch(error){next(error);}
+  });
+
   app.get("/api/v1/locations", authenticate(database), requirePermission(database, "locations.manage"), async (_req,res,next)=>{
     try {
       const [zones,areas,bins] = await Promise.all([
