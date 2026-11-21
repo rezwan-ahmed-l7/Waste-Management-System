@@ -163,12 +163,46 @@ function TaskAssignmentForm({ taskId, users, teams, onDone }: { taskId: string; 
   </form>;
 }
 
+
+type Notification = { notificationId: string; title: string; body: string; readAt: string | null; createdAt: string };
+type Announcement = { announcementId: string; title: string; body: string; audience: string; publishedAt: string };
+type Analytics = {
+  reportCounts: { status: string; count: number }[];
+  taskCounts: { status: string; count: number }[];
+  verifiedWeights: { categoryName: string; weightKg: number; recordCount: number }[];
+  destinationWeights: { destinationType: string; weightKg: number }[];
+  remainingWeightKg: number;
+  reportsByZone: { zoneName: string; reportCount: number }[];
+};
+
+function AnnouncementForm({ onDone }: { onDone: () => void }) {
+  const [title,setTitle]=useState("");
+  const [body,setBody]=useState("");
+  const [error,setError]=useState("");
+  const [saving,setSaving]=useState(false);
+  async function submit(event:FormEvent<HTMLFormElement>){
+    event.preventDefault();setSaving(true);setError("");
+    try{
+      await apiRequest("/announcements",{method:"POST",body:JSON.stringify({title,body,audience:"all_users"})});
+      setTitle("");setBody("");onDone();
+    }catch(cause){setError(cause instanceof Error?cause.message:"Announcement failed.");}
+    finally{setSaving(false);}
+  }
+  return <form className="announcementForm" onSubmit={submit}>
+    <strong>Publish an announcement</strong>
+    <input required minLength={3} maxLength={160} value={title} onChange={event=>setTitle(event.target.value)} placeholder="Announcement title" />
+    <textarea required minLength={3} maxLength={5000} rows={3} value={body} onChange={event=>setBody(event.target.value)} placeholder="Write an update for all fest users…" />
+    {error?<p className="error">{error}</p>:null}
+    <button className="primaryButton" disabled={saving}>{saving?"Publishing…":"Publish to everyone"}</button>
+  </form>;
+}
+
 export default function DashboardPage() {
   const router = useRouter();
   const [user,setUser] = useState<CurrentUser | null>(null);
   const [reports,setReports] = useState<Report[]>([]);
   const [tasks,setTasks] = useState<Task[]>([]);
-  const [categories,setCategories] = useState<Category[]>([]);\n  const [assignableUsers,setAssignableUsers] = useState<AssignableUser[]>([]);\n  const [teams,setTeams] = useState<Team[]>([]);
+  const [categories,setCategories] = useState<Category[]>([]);\n  const [assignableUsers,setAssignableUsers] = useState<AssignableUser[]>([]);\n  const [teams,setTeams] = useState<Team[]>([]);\n  const [notifications,setNotifications] = useState<Notification[]>([]);\n  const [announcements,setAnnouncements] = useState<Announcement[]>([]);\n  const [analytics,setAnalytics] = useState<Analytics | null>(null);
   const [error,setError] = useState("");
   const [loading,setLoading] = useState(true);
   const [workingId,setWorkingId] = useState("");
@@ -179,14 +213,14 @@ export default function DashboardPage() {
     setUser(current);
     const isManager = current.roles.some(role=>["administrator","waste_manager","fest_organizer"].includes(role));
     const canWork = current.roles.some(role=>["administrator","waste_manager","team_lead","volunteer"].includes(role));
-    const canManage = current.roles.some(role=>["administrator","waste_manager"].includes(role));\n    const [reportPayload,taskPayload,optionsPayload,userPayload,teamPayload] = await Promise.all([
+    const canManage = current.roles.some(role=>["administrator","waste_manager"].includes(role));\n    const canSeeAnalytics = current.roles.some(role=>["administrator","waste_manager","fest_organizer"].includes(role));\n    const [reportPayload,taskPayload,optionsPayload,userPayload,teamPayload,notificationPayload,announcementPayload,analyticsPayload] = await Promise.all([
       isManager ? apiRequest("/reports?pageSize=30") : Promise.resolve({data:[]}),
       canWork ? apiRequest("/tasks?pageSize=30") : Promise.resolve({data:[]}),
       canWork ? apiRequest("/public/form-options") : Promise.resolve({categories:[]})
     ]);
     setReports(reportPayload ?? []);
     setTasks(taskPayload ?? []);
-    setCategories(optionsPayload.categories ?? []);\n    setAssignableUsers(userPayload ?? []);\n    setTeams(teamPayload ?? []);
+    setCategories(optionsPayload.categories ?? []);\n    setAssignableUsers(userPayload ?? []);\n    setTeams(teamPayload ?? []);\n    setNotifications(notificationPayload ?? []);\n    setAnnouncements(announcementPayload ?? []);\n    setAnalytics(analyticsPayload ?? null);
   },[]);
 
   useEffect(() => {
@@ -207,6 +241,27 @@ export default function DashboardPage() {
     try { await action(); await loadData(); }
     catch(cause) { setError(cause instanceof Error?cause.message:"The action failed."); }
     finally { setWorkingId(""); }
+  }
+
+
+  async function markNotificationRead(notificationId: string) {
+    await perform(notificationId,()=>apiRequest("/notifications/"+notificationId+"/read",{method:"POST"}));
+  }
+
+  async function downloadCsv(type: "reports"|"tasks"|"collections") {
+    try {
+      const response = await fetch(API+"/analytics/export.csv?type="+type,{credentials:"include"});
+      if(!response.ok) throw new Error("CSV export is unavailable.");
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href=url;
+      anchor.download="baust-cse-fest-"+type+".csv";
+      anchor.click();
+      URL.revokeObjectURL(url);
+    } catch(cause) {
+      setError(cause instanceof Error?cause.message:"Export failed.");
+    }
   }
 
   async function signOut() {
