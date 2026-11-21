@@ -433,7 +433,9 @@ export default function DashboardPage() {
       canSeeAnalytics ? apiRequest("/analytics/overview") : Promise.resolve(null),
       canManage ? apiRequest("/locations") : Promise.resolve({zones:[],areas:[],bins:[]}),
       current.roles.includes("administrator") ? apiRequest("/users") : Promise.resolve([]),
-      current.roles.includes("administrator") ? apiRequest("/roles") : Promise.resolve([])
+      current.roles.includes("administrator") ? apiRequest("/roles") : Promise.resolve([]),
+      canManage ? apiRequest("/materials/overview") : Promise.resolve({batches:[],segregations:[],destinations:[],allocations:[]}),
+      canWork ? apiRequest("/cleaning-rounds") : Promise.resolve([])
     ]);
     setReports(reportPayload ?? []);
     setTasks(taskPayload ?? []);
