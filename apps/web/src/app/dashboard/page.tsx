@@ -270,6 +270,24 @@ function LocationManager({locations,categories,onDone}:{locations:LocationData;c
 type AdminUser = { userId:string; fullName:string; email:string; status:string; roles:string[] };
 type Role = { roleId:number; roleKey:string; displayName:string };
 
+
+function UserRoleEditor({user,roles,onDone}:{user:AdminUser;roles:Role[];onDone:()=>void}){
+  const [selected,setSelected]=useState<number[]>(roles.filter(role=>user.roles.includes(role.roleKey)).map(role=>role.roleId));
+  const [error,setError]=useState("");const [saving,setSaving]=useState(false);
+  useEffect(()=>{setSelected(roles.filter(role=>user.roles.includes(role.roleKey)).map(role=>role.roleId));},[user.userId,user.roles.join("|"),roles]);
+  async function submit(event:FormEvent<HTMLFormElement>){
+    event.preventDefault();setSaving(true);setError("");
+    try{await apiRequest("/users/"+user.userId+"/roles",{method:"PUT",body:JSON.stringify({roleIds:selected})});onDone();}
+    catch(cause){setError(cause instanceof Error?cause.message:"Role update failed.");}
+    finally{setSaving(false);}
+  }
+  return <form className="roleEditor" onSubmit={submit}>
+    {roles.map(role=><label key={role.roleId}><input type="checkbox" checked={selected.includes(role.roleId)} onChange={e=>setSelected(current=>e.target.checked?[...current,role.roleId]:current.filter(id=>id!==role.roleId))}/>{role.displayName}</label>)}
+    <button className="secondaryButton" disabled={saving||selected.length===0}>Save roles</button>
+    {error?<small className="error">{error}</small>:null}
+  </form>;
+}
+
 function UserAdmin({users,roles,onDone}:{users:AdminUser[];roles:Role[];onDone:()=>void}){
   const [fullName,setFullName]=useState(""); const [email,setEmail]=useState(""); const [password,setPassword]=useState("");
   const [roleIds,setRoleIds]=useState<number[]>([]);
@@ -305,6 +323,7 @@ function UserAdmin({users,roles,onDone}:{users:AdminUser[];roles:Role[];onDone:(
     {users.map(user=><article className="workCard userRow" key={user.userId}>
       <div><strong>{user.fullName}</strong><p className="muted">{user.email}</p><div className="roleList">{user.roles.map(role=><span className="rolePill" key={role}>{role.replaceAll("_"," ")}</span>)}</div></div>
       <div className="userActions"><span className={"statusPill status-"+user.status}>{user.status}</span><button className="secondaryButton" disabled={saving} onClick={()=>void changeStatus(user)}>{user.status==="active"?"Suspend":"Reactivate"}</button></div>
+      <details className="roleEditorDetails"><summary>Manage roles</summary><UserRoleEditor user={user} roles={roles} onDone={onDone}/></details>
     </article>)}
   </section>;
 }
