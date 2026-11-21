@@ -13,7 +13,7 @@ if (password.length < 14 || password.length > 128) {
   throw new Error("Bootstrap password must contain between 14 and 128 characters.");
 }
 
-const client = new Client({ connectionString });
+const client = new Client({ connectionString, options: "-c search_path=waste_mgmt,public" });
 try {
   await client.connect();
   await client.query("BEGIN");
