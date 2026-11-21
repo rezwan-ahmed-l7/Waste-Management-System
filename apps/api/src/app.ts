@@ -8,7 +8,7 @@ import { publicWasteReportSchema } from "@waste/contracts";
 import type { Pool } from "pg";
 import { env } from "./config.js";
 import argon2 from "argon2";
-import { authenticate, readSessionToken } from "./auth.js";
+import { authenticate, readSessionToken, requirePermission } from "./auth.js";
 
 type Database = Pick<Pool, "query" | "connect">;
 
@@ -135,6 +135,188 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
       return;
     }
     res.status(200).json({ data: { user: req.auth } });
+  });
+
+
+  const reportRead = [authenticate(database), requirePermission(database, "reports.read")];
+
+  app.get("/api/v1/reports", ...reportRead, async (req, res, next) => {
+    const filters = z.object({
+      status: z.enum(["submitted","under_review","accepted","in_progress","resolved","rejected","duplicate","cancelled"]).optional(),
+      areaId: z.string().uuid().optional(),
+      categoryId: z.coerce.number().int().positive().optional(),
+      page: z.coerce.number().int().min(1).default(1),
+      pageSize: z.coerce.number().int().min(1).max(100).default(20)
+    }).safeParse(req.query);
+    if (!filters.success) {
+      res.status(400).json({ error: { code: "VALIDATION_ERROR", message: "Invalid report filters." } });
+      return;
+    }
+    try {
+      const conditions = ["r.fest_id=1"];
+      const values: (string | number)[] = [];
+      if (filters.data.status) {
+        values.push(filters.data.status);
+        conditions.push("r.status=$" + values.length);
+      }
+      if (filters.data.areaId) {
+        values.push(filters.data.areaId);
+        conditions.push("r.area_id=$" + values.length);
+      }
+      if (filters.data.categoryId) {
+        values.push(filters.data.categoryId);
+        conditions.push("r.category_id=$" + values.length);
+      }
+      const where = conditions.join(" AND ");
+      const count = await database.query(
+        "SELECT COUNT(*)::int AS total FROM waste_mgmt.waste_reports r WHERE " + where,
+        values
+      );
+      const offset = (filters.data.page - 1) * filters.data.pageSize;
+      const pageValues = [...values, filters.data.pageSize, offset];
+      const result = await database.query(
+        "SELECT r.report_id AS \"reportId\", r.status, r.priority, r.is_anonymous AS \"isAnonymous\", " +
+        "r.submitted_at AS \"submittedAt\", r.updated_at AS \"updatedAt\", r.description, " +
+        "a.name AS \"areaName\", z.name AS \"zoneName\", wc.name AS \"categoryName\" " +
+        "FROM waste_mgmt.waste_reports r " +
+        "JOIN waste_mgmt.areas a ON a.area_id=r.area_id " +
+        "JOIN waste_mgmt.zones z ON z.zone_id=a.zone_id " +
+        "JOIN waste_mgmt.waste_categories wc ON wc.category_id=r.category_id " +
+        "WHERE " + where + " ORDER BY r.submitted_at DESC LIMIT $" + (values.length + 1) +
+        " OFFSET $" + (values.length + 2),
+        pageValues
+      );
+      res.status(200).json({
+        data: result.rows,
+        meta: {
+          page: filters.data.page,
+          pageSize: filters.data.pageSize,
+          total: count.rows[0]?.total ?? 0
+        }
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/v1/reports/:reportId", ...reportRead, async (req, res, next) => {
+    const reportId = z.string().uuid().safeParse(req.params.reportId);
+    if (!reportId.success) {
+      res.status(404).json({ error: { code: "REPORT_NOT_FOUND", message: "Report not found." } });
+      return;
+    }
+    try {
+      const result = await database.query(
+        "SELECT r.report_id AS \"reportId\", r.status, r.priority, r.is_anonymous AS \"isAnonymous\", " +
+        "r.reporter_name AS \"reporterName\", r.reporter_contact AS \"reporterContact\", " +
+        "r.description, r.submitted_at AS \"submittedAt\", r.updated_at AS \"updatedAt\", " +
+        "r.review_reason AS \"reviewReason\", r.canonical_report_id AS \"canonicalReportId\", " +
+        "a.area_id AS \"areaId\", a.name AS \"areaName\", z.name AS \"zoneName\", " +
+        "wc.name AS \"categoryName\" " +
+        "FROM waste_mgmt.waste_reports r " +
+        "JOIN waste_mgmt.areas a ON a.area_id=r.area_id " +
+        "JOIN waste_mgmt.zones z ON z.zone_id=a.zone_id " +
+        "JOIN waste_mgmt.waste_categories wc ON wc.category_id=r.category_id " +
+        "WHERE r.report_id=$1 AND r.fest_id=1",
+        [reportId.data]
+      );
+      const report = result.rows[0];
+      if (!report) {
+        res.status(404).json({ error: { code: "REPORT_NOT_FOUND", message: "Report not found." } });
+        return;
+      }
+      const canReview = req.auth?.roles.some(role => ["administrator","waste_manager"].includes(role)) ?? false;
+      if (!canReview) {
+        delete report.reporterName;
+        delete report.reporterContact;
+        delete report.reviewReason;
+      }
+      const [history, notes] = await Promise.all([
+        database.query(
+          "SELECT from_status AS \"fromStatus\", to_status AS \"toStatus\", reason, changed_at AS \"changedAt\" " +
+          "FROM waste_mgmt.report_status_history WHERE report_id=$1 " +
+          (canReview ? "" : "AND is_public=TRUE ") + "ORDER BY changed_at",
+          [reportId.data]
+        ),
+        database.query(
+          "SELECT body, visibility, created_at AS \"createdAt\" FROM waste_mgmt.report_notes " +
+          "WHERE report_id=$1 " + (canReview ? "" : "AND visibility='public' ") + "ORDER BY created_at",
+          [reportId.data]
+        )
+      ]);
+      res.status(200).json({ data: { ...report, history: history.rows, notes: notes.rows } });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/v1/reports/:reportId/review", authenticate(database), requirePermission(database, "reports.review"), async (req, res, next) => {
+    const reportId = z.string().uuid().safeParse(req.params.reportId);
+    const body = z.object({
+      action: z.enum(["accept","reject","duplicate"]),
+      reason: z.string().trim().max(1000).optional(),
+      canonicalReportId: z.string().uuid().optional()
+    }).strict().safeParse(req.body);
+    if (!reportId.success || !body.success) {
+      res.status(400).json({ error: { code: "VALIDATION_ERROR", message: "Invalid report review request." } });
+      return;
+    }
+    if ((body.data.action === "reject" || body.data.action === "duplicate") && !body.data.reason) {
+      res.status(422).json({ error: { code: "REASON_REQUIRED", message: "A reason is required for this review action." } });
+      return;
+    }
+    if (body.data.action === "duplicate" && !body.data.canonicalReportId) {
+      res.status(422).json({ error: { code: "CANONICAL_REPORT_REQUIRED", message: "Choose the original report this report duplicates." } });
+      return;
+    }
+    try {
+      const client = await database.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query("SELECT set_config('app.actor_user_id',$1,true)", [req.auth?.userId ?? ""]);
+        const current = await client.query(
+          "SELECT report_id,status FROM waste_mgmt.waste_reports WHERE report_id=$1 AND fest_id=1 FOR UPDATE",
+          [reportId.data]
+        );
+        const row = current.rows[0];
+        if (!row) {
+          await client.query("ROLLBACK");
+          res.status(404).json({ error: { code: "REPORT_NOT_FOUND", message: "Report not found." } });
+          return;
+        }
+        if (row.status !== "under_review") {
+          await client.query("ROLLBACK");
+          res.status(409).json({ error: { code: "INVALID_REPORT_STATE", message: "Only reports under review can receive a review decision." } });
+          return;
+        }
+        if (body.data.canonicalReportId) {
+          const canonical = await client.query(
+            "SELECT report_id FROM waste_mgmt.waste_reports WHERE report_id=$1 AND status NOT IN ('duplicate','rejected','cancelled')",
+            [body.data.canonicalReportId]
+          );
+          if (canonical.rowCount !== 1 || body.data.canonicalReportId === reportId.data) {
+            await client.query("ROLLBACK");
+            res.status(422).json({ error: { code: "INVALID_CANONICAL_REPORT", message: "The selected original report is not valid." } });
+            return;
+          }
+        }
+        const nextStatus = body.data.action === "accept" ? "accepted" : body.data.action === "reject" ? "rejected" : "duplicate";
+        const updated = await client.query(
+          "UPDATE waste_mgmt.waste_reports SET status=$1, reviewed_by=$2, reviewed_at=now(), review_reason=$3, canonical_report_id=$4 " +
+          "WHERE report_id=$5 RETURNING report_id AS \"reportId\", status, reviewed_at AS \"reviewedAt\"",
+          [nextStatus, req.auth?.userId, body.data.reason ?? null, body.data.canonicalReportId ?? null, reportId.data]
+        );
+        await client.query("COMMIT");
+        res.status(200).json({ data: updated.rows[0] });
+      } catch (error) {
+        await client.query("ROLLBACK").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    } catch (error) {
+      next(error);
+    }
   });
 
   app.get("/api/v1/public/form-options", async (_req, res, next) => {
