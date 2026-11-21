@@ -57,6 +57,10 @@ jobs:
           POSTGRES_DB: waste_management
           APP_DB_PASSWORD: ci_app_password
         run: bash database/002_grants.sh
+      - name: Assert runtime database role is not privileged
+        env:
+          PGPASSWORD: ci_app_password
+        run: test "$(psql -h localhost -U waste_app -d waste_management -Atc "SELECT rolsuper FROM pg_roles WHERE rolname=current_user")" = "f"
       - name: Verify PostgreSQL schema as runtime role
         env:
           DATABASE_URL: postgresql://waste_app:ci_app_password@localhost:5432/waste_management
