@@ -56,15 +56,17 @@ Never commit real credentials, session secrets, database passwords, or private u
 - Test success, invalid input, denied permissions, and failure paths.
 - Documentation must describe real implemented behavior, not pretend features exist.
 
-## Delivery status
-- [x] Repository inspected; initial branch created.
-- [x] Documentation cross-verification (five-file limit, links, role/status alignment, workflows, and data integrity rules reviewed).
-- [x] Single-fest scope, anonymous reporting, and English database naming confirmed.
-- [x] PostgreSQL schema runtime verification and database integrity smoke tests pass on a fresh PostgreSQL 16 instance.
-- [x] Node/TypeScript workspace, API, web app, shared contracts, login/session authorization and administrator account management.
-- [x] Anonymous reports, private tracking, status history, manager review, notes and private evidence uploads.
-- [x] Zones, areas, bins, waste categories, teams, memberships, cleaning rounds, tasks and assignments.
-- [x] Collection submissions, manager verification/rejection, no-waste closure, material segregation and allocation.
-- [x] In-app notifications, announcements, analytics and CSV exports.
-- [x] CI typecheck, lint, automated tests, PostgreSQL schema/smoke checks and production build pass; npm audit reports no advisories.
-- [ ] Finish evidence-review UI, audit/fest administration screens, Playwright end-to-end tests, backup/restore and deployment handover.
+## Verified delivery status
+
+- [x] Core single-fest application, PostgreSQL schema, API, public reporting portal and staff dashboard implemented.
+- [x] Authentication, session validation/revocation, server-side permission checks, user/role administration and last-administrator protection implemented.
+- [x] Report lifecycle, duplicate linking, public tracking, manager notes, private evidence uploads and evidence-review screens implemented.
+- [x] Location/category administration, teams, memberships, rounds, tasks, assignments, collection submissions and manager decisions implemented.
+- [x] Verified-only material batches, segregation, destinations, allocations and database balance guards implemented.
+- [x] In-app notifications, announcements, analytics, CSV exports, fest settings and audit-log screens implemented.
+- [x] CI passed on 2026-11-21 for commit `ec7128c6075c446e7f13a43e043a84f511a99c27`: clean `npm ci`, `npm audit`, typecheck, lint, Vitest, PostgreSQL 16 schema verification, database smoke tests, reporting SQL and production build.
+- [ ] Add broad role/resource authorization and lifecycle regression coverage plus browser-level end-to-end journeys.
+- [ ] Add a tested backup/restore drill and production deployment configuration.
+- [ ] Complete operational security review and confirm fest-specific settings, privacy/retention policy, hosting and persistent private storage before production use.
+
+The core implementation is not a production deployment. Keep this branch unmerged until the remaining verification and operational gates are complete and the owner explicitly approves integration.
