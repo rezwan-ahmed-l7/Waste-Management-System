@@ -1944,8 +1944,8 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
 
   app.get("/api/v1/analytics/final-report", authenticate(database), requirePermission(database, "analytics.read"), async (req, res, next) => {
     const filters = z.object({
-      from: z.string().regex(/^\\d{4}-\\d{2}-\\d{2}$/),
-      to: z.string().regex(/^\\d{4}-\\d{2}-\\d{2}$/)
+      from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/)
     }).strict().safeParse(req.query);
     if (!filters.success) {
       res.status(400).json({ error: { code: "INVALID_REPORT_WINDOW", message: "Provide from and to dates in YYYY-MM-DD format." } });
