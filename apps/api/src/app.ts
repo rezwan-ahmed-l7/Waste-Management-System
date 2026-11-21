@@ -306,7 +306,6 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
     try{
       await client.query("BEGIN");
         await client.query("SELECT set_config('app.actor_user_id',$1,true),set_config('app.request_id',$2,true)",[req.auth?.userId ?? "",res.locals.requestId]);
-      await client.query("SELECT set_config('app.actor_user_id',$1,true)",[auth.userId]);
       const submission=await client.query(
         "SELECT submission_id FROM waste_mgmt.collection_submissions WHERE submission_id=$1 AND submitted_by=$2 AND status='submitted' FOR UPDATE",
         [id.data,auth.userId]
@@ -380,7 +379,6 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
       try{
         await client.query("BEGIN");
         await client.query("SELECT set_config('app.actor_user_id',$1,true),set_config('app.request_id',$2,true)",[req.auth?.userId ?? "",res.locals.requestId]);
-        await client.query("SELECT set_config('app.actor_user_id',$1,true)",[auth.userId]);
         const report=await client.query("SELECT report_id FROM waste_mgmt.waste_reports WHERE report_id=$1 AND fest_id=1 FOR SHARE",[id.data]);
         if(report.rowCount!==1){
           await client.query("ROLLBACK");
@@ -411,7 +409,6 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
       try {
         await client.query("BEGIN");
         await client.query("SELECT set_config('app.actor_user_id',$1,true),set_config('app.request_id',$2,true)",[req.auth?.userId ?? "",res.locals.requestId]);
-        await client.query("SELECT set_config('app.actor_user_id',$1,true)",[auth.userId]);
         const current = await client.query(
           "SELECT report_id,status FROM waste_mgmt.waste_reports WHERE report_id=$1 AND fest_id=1 FOR UPDATE",
           [id.data]
@@ -473,7 +470,6 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
       try {
         await client.query("BEGIN");
         await client.query("SELECT set_config('app.actor_user_id',$1,true),set_config('app.request_id',$2,true)",[req.auth?.userId ?? "",res.locals.requestId]);
-        await client.query("SELECT set_config('app.actor_user_id',$1,true)", [req.auth?.userId ?? ""]);
         const current = await client.query(
           "SELECT report_id,status FROM waste_mgmt.waste_reports WHERE report_id=$1 AND fest_id=1 FOR UPDATE",
           [reportId.data]
@@ -645,7 +641,6 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
       try{
         await client.query("BEGIN");
         await client.query("SELECT set_config('app.actor_user_id',$1,true),set_config('app.request_id',$2,true)",[req.auth?.userId ?? "",res.locals.requestId]);
-        await client.query("SELECT set_config('app.actor_user_id',$1,true)",[auth.userId]);
         const result=await client.query(
           "UPDATE waste_mgmt.fest SET name=$1,description=$2,timezone=$3,starts_at=$4,ends_at=$5,status=$6 " +
           "WHERE fest_id=1 RETURNING fest_id AS \"festId\",name,description,timezone,starts_at AS \"startsAt\",ends_at AS \"endsAt\",status,updated_at AS \"updatedAt\"",
@@ -718,7 +713,6 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
       try{
         await client.query("BEGIN");
         await client.query("SELECT set_config('app.actor_user_id',$1,true),set_config('app.request_id',$2,true)",[req.auth?.userId ?? "",res.locals.requestId]);
-        if(req.auth)await client.query("SELECT set_config('app.actor_user_id',$1,true)",[req.auth.userId]);
         const roles=await client.query("SELECT role_id FROM waste_mgmt.roles WHERE role_id=ANY($1::smallint[])",[body.data.roleIds]);
         if(roles.rowCount!==new Set(body.data.roleIds).size){
           await client.query("ROLLBACK");
@@ -773,7 +767,6 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
             return;
           }
         }
-        if(auth)await client.query("SELECT set_config('app.actor_user_id',$1,true)",[auth.userId]);
         const updated=await client.query(
           "UPDATE waste_mgmt.users SET status=$1 WHERE user_id=$2 RETURNING user_id AS \"userId\",status",
           [body.data.status,id.data]
@@ -801,7 +794,6 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
       try{
         await client.query("BEGIN");
         await client.query("SELECT set_config('app.actor_user_id',$1,true),set_config('app.request_id',$2,true)",[req.auth?.userId ?? "",res.locals.requestId]);
-        await client.query("SELECT set_config('app.actor_user_id',$1,true)",[auth.userId]);
         const targetUser=await client.query("SELECT user_id FROM waste_mgmt.users WHERE user_id=$1 FOR UPDATE",[id.data]);
         if(targetUser.rowCount!==1){
           await client.query("ROLLBACK");
@@ -1109,7 +1101,6 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
       try {
         await client.query("BEGIN");
         await client.query("SELECT set_config('app.actor_user_id',$1,true),set_config('app.request_id',$2,true)",[req.auth?.userId ?? "",res.locals.requestId]);
-        await client.query("SELECT set_config('app.actor_user_id',$1,true)",[auth.userId]);
         const task = await client.query("SELECT task_id,status FROM waste_mgmt.collection_tasks WHERE task_id=$1 AND fest_id=1 FOR UPDATE",[taskId.data]);
         if (!task.rows[0] || !["open","assigned"].includes(task.rows[0].status)) {
           await client.query("ROLLBACK");
@@ -1179,7 +1170,6 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
       try {
         await client.query("BEGIN");
         await client.query("SELECT set_config('app.actor_user_id',$1,true),set_config('app.request_id',$2,true)",[req.auth?.userId ?? "",res.locals.requestId]);
-        await client.query("SELECT set_config('app.actor_user_id',$1,true)",[auth.userId]);
         const task = await client.query(
           "SELECT task_id,status FROM waste_mgmt.collection_tasks WHERE task_id=$1 AND fest_id=1 FOR UPDATE",
           [id.data]
@@ -1233,7 +1223,6 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
       try {
         await client.query("BEGIN");
         await client.query("SELECT set_config('app.actor_user_id',$1,true),set_config('app.request_id',$2,true)",[req.auth?.userId ?? "",res.locals.requestId]);
-        await client.query("SELECT set_config('app.actor_user_id',$1,true)",[auth.userId]);
         const task = await client.query(
           "SELECT task_id,status FROM waste_mgmt.collection_tasks WHERE task_id=$1 AND fest_id=1 FOR UPDATE",
           [id.data]
@@ -1289,7 +1278,6 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
       try {
         await client.query("BEGIN");
         await client.query("SELECT set_config('app.actor_user_id',$1,true),set_config('app.request_id',$2,true)",[req.auth?.userId ?? "",res.locals.requestId]);
-        await client.query("SELECT set_config('app.actor_user_id',$1,true)",[auth.userId]);
         const found = await client.query(
           "SELECT submission_id,task_id,submitted_by,status FROM waste_mgmt.collection_submissions WHERE submission_id=$1 FOR UPDATE",
           [id.data]
@@ -1427,7 +1415,6 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
       try {
         await client.query("BEGIN");
         await client.query("SELECT set_config('app.actor_user_id',$1,true),set_config('app.request_id',$2,true)",[req.auth?.userId ?? "",res.locals.requestId]);
-        await client.query("SELECT set_config('app.actor_user_id',$1,true)",[auth.userId]);
         const scope = taskScope(auth.userId,auth.roles,2);
         const taskResult = await client.query(
           "SELECT t.task_id,t.status FROM waste_mgmt.collection_tasks t WHERE t.task_id=$1 AND t.fest_id=1 AND " + scope.sql + " FOR UPDATE",
@@ -1517,7 +1504,6 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
       try {
         await client.query("BEGIN");
         await client.query("SELECT set_config('app.actor_user_id',$1,true),set_config('app.request_id',$2,true)",[req.auth?.userId ?? "",res.locals.requestId]);
-        await client.query("SELECT set_config('app.actor_user_id',$1,true)", [auth.userId]);
         const area = await client.query(
           "SELECT area_id FROM waste_mgmt.areas WHERE area_id=$1 AND fest_id=1 AND is_active=TRUE FOR SHARE",
           [body.data.areaId]
@@ -1668,7 +1654,6 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
       try{
         await client.query("BEGIN");
         await client.query("SELECT set_config('app.actor_user_id',$1,true),set_config('app.request_id',$2,true)",[req.auth?.userId ?? "",res.locals.requestId]);
-        await client.query("SELECT set_config('app.actor_user_id',$1,true)",[auth.userId]);
         const area=await client.query("SELECT area_id FROM waste_mgmt.areas WHERE area_id=$1 AND fest_id=1 AND is_active=TRUE",[body.data.areaId]);
         if(area.rowCount!==1){
           await client.query("ROLLBACK");
@@ -1708,7 +1693,6 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
       try{
         await client.query("BEGIN");
         await client.query("SELECT set_config('app.actor_user_id',$1,true),set_config('app.request_id',$2,true)",[req.auth?.userId ?? "",res.locals.requestId]);
-        await client.query("SELECT set_config('app.actor_user_id',$1,true)",[auth.userId]);
         const round=await client.query(
           "SELECT round_id,area_id,status,planned_end_at FROM waste_mgmt.cleaning_rounds WHERE round_id=$1 AND fest_id=1 FOR UPDATE",
           [roundId.data]
@@ -1831,7 +1815,6 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
       try{
         await client.query("BEGIN");
         await client.query("SELECT set_config('app.actor_user_id',$1,true),set_config('app.request_id',$2,true)",[req.auth?.userId ?? "",res.locals.requestId]);
-        await client.query("SELECT set_config('app.actor_user_id',$1,true)",[auth.userId]);
         const result=await client.query(
           "INSERT INTO waste_mgmt.material_destinations(destination_type,name,contact_info) VALUES ($1,$2,$3) " +
           "RETURNING destination_id AS \"destinationId\",destination_type AS \"destinationType\",name",
@@ -1858,7 +1841,6 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
       try{
         await client.query("BEGIN");
         await client.query("SELECT set_config('app.actor_user_id',$1,true),set_config('app.request_id',$2,true)",[req.auth?.userId ?? "",res.locals.requestId]);
-        await client.query("SELECT set_config('app.actor_user_id',$1,true)",[auth.userId]);
         const category=await client.query("SELECT category_id FROM waste_mgmt.waste_categories WHERE category_id=$1 AND is_active=TRUE",[body.data.outputCategoryId]);
         if(category.rowCount!==1){
           await client.query("ROLLBACK");
@@ -1895,7 +1877,6 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
       try{
         await client.query("BEGIN");
         await client.query("SELECT set_config('app.actor_user_id',$1,true),set_config('app.request_id',$2,true)",[req.auth?.userId ?? "",res.locals.requestId]);
-        await client.query("SELECT set_config('app.actor_user_id',$1,true)",[auth.userId]);
         const destination=await client.query("SELECT destination_id FROM waste_mgmt.material_destinations WHERE destination_id=$1 AND is_active=TRUE",[body.data.destinationId]);
         if(destination.rowCount!==1){
           await client.query("ROLLBACK");
