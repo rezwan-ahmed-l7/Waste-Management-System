@@ -1123,7 +1123,7 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
     }
     const csvCell = (value: unknown) => {
       let text = value === null || value === undefined ? "" : String(value);
-      if (/^[\\s]*[=+@-]/.test(text)) text = "'" + text;
+      if (/^[\s]*[=+@-]/.test(text)) text = "'" + text;
       return '"' + text.replace(/"/g,'""') + '"';
     };
     try {
