@@ -14,7 +14,7 @@ function databaseForAuditedWrites() {
     if (sql.includes("FROM waste_mgmt.user_roles ur")) return { rows: [{ "?column?": 1 }], rowCount: 1 };
     return { rows: [], rowCount: 0 };
   });
-  const clientQuery = vi.fn(async (sql: string) => {
+  const clientQuery = vi.fn(async (sql: string, _values?: unknown[]) => {
     if (sql.includes("INSERT INTO waste_mgmt.zones")) {
       return { rows: [{ zoneId: "f2b5ef43-26d5-4d15-a849-cd4c3f0c3a11", code: "AUDIT", name: "Audit Test Zone" }], rowCount: 1 };
     }
