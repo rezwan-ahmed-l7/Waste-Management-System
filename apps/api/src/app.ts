@@ -256,6 +256,51 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
     }
   });
 
+
+  app.post("/api/v1/reports/:reportId/start-review", authenticate(database), requirePermission(database, "reports.review"), async (req, res, next) => {
+    const id = z.string().uuid().safeParse(req.params.reportId);
+    const auth = req.auth;
+    if (!id.success || !auth) {
+      res.status(400).json({ error: { code: "VALIDATION_ERROR", message: "Invalid report ID." } });
+      return;
+    }
+    try {
+      const client = await database.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query("SELECT set_config('app.actor_user_id',$1,true)",[auth.userId]);
+        const current = await client.query(
+          "SELECT report_id,status FROM waste_mgmt.waste_reports WHERE report_id=$1 AND fest_id=1 FOR UPDATE",
+          [id.data]
+        );
+        if (!current.rows[0]) {
+          await client.query("ROLLBACK");
+          res.status(404).json({ error: { code: "REPORT_NOT_FOUND", message: "Report not found." } });
+          return;
+        }
+        if (current.rows[0].status !== "submitted") {
+          await client.query("ROLLBACK");
+          res.status(409).json({ error: { code: "INVALID_REPORT_STATE", message: "Only newly submitted reports can enter review." } });
+          return;
+        }
+        const updated = await client.query(
+          "UPDATE waste_mgmt.waste_reports SET status='under_review',reviewed_by=$1,reviewed_at=now() " +
+          "WHERE report_id=$2 RETURNING report_id AS \"reportId\",status,reviewed_at AS \"reviewedAt\"",
+          [auth.userId,id.data]
+        );
+        await client.query("COMMIT");
+        res.status(200).json({ data: updated.rows[0] });
+      } catch (error) {
+        await client.query("ROLLBACK").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.post("/api/v1/reports/:reportId/review", authenticate(database), requirePermission(database, "reports.review"), async (req, res, next) => {
     const reportId = z.string().uuid().safeParse(req.params.reportId);
     const body = z.object({
