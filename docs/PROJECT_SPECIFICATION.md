@@ -15,7 +15,7 @@ A report is not proof of collection. A task is not complete until evidence is su
 - Zone/area hierarchy, waste categories, and bin inventory.
 - Report review, prioritization, duplicate linking, and status history.
 - Scheduled cleaning rounds as well as report-driven tasks.
-- Teams, team leads, volunteer membership, availability, and assignments.
+- Teams, team leads, historical volunteer membership, and assignments. Availability scheduling is deferred from the current release.
 - Task progress, collection submissions, photo evidence, weight, and verification.
 - Segregation, recycling handover, disposal, and material reconciliation.
 - In-app notifications, announcements, role-specific dashboards, CSV export, and final fest report.
@@ -62,13 +62,13 @@ Volunteer submits collection timestamp, one or more material/weight records, mea
 Record segregation/sorting, recyclable quantities and destination/recipient, and disposal quantities and destination/facility. Partial processing is allowed. Never allocate more material downstream than the verified available quantity. Show collected, processed, and awaiting-processing balances.
 
 ### FR-07 Workforce
-Create teams, appoint team leads, manage time-bounded memberships and volunteer availability, assign work, and show workload/performance. Inactive users cannot receive new assignments; historical membership remains queryable.
+Create teams, appoint team leads, manage time-bounded memberships, assign work, and show workload. Inactive users cannot receive new assignments; historical membership remains queryable. Volunteer availability scheduling is deferred.
 
 ### FR-08 Notifications
 Create in-app notifications for report updates, assignments, reminders, verification decisions, and announcements. Notifications are recipient-scoped and have read/unread state. External email/SMS/WhatsApp is deferred; core operations must work without external provider credentials.
 
 ### FR-09 Dashboard and analytics
-Show reports by status/category/priority/area; open and overdue tasks; verification backlog; workload; verified collected weight; recycled/disposed/awaiting quantities; average review/resolution time; and area hotspots. Provide date/area/category filters and authorization-safe CSV export. Final report states event/date scope and metric definitions.
+Show reports by status/category/priority/area; open and overdue tasks; verification backlog; workload; verified collected weight; recycled/disposed/awaiting quantities; and area hotspots. Provide authorization-safe CSV export. A date-scoped, printable final fest report with documented metric definitions remains a delivery item, not a completed feature.
 
 ### FR-10 Administration and audit
 Manage accounts, roles, categories, zones/areas/bins, event configuration, announcements, and audit views. Audit actor, action, entity, timestamp, request ID, and safe metadata. Never log passwords, tokens, or unnecessary personal data.
