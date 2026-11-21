@@ -60,7 +60,7 @@ After applying the schema and smoke tests, run the DBMS query suite:
 psql -U postgres -d waste_management -f database/003_reporting_queries.sql
 ```
 
-The suite demonstrates relational joins, left joins, aggregation, filtered aggregates, CTEs, window functions, lateral joins, workload reporting, overdue-task derivation, material reconciliation and audit summaries.
+The suite demonstrates relational joins, left joins, aggregation, filtered aggregates, CTEs, window functions, lateral joins, workload reporting, overdue-task derivation, material reconciliation and audit summaries. Run the two-connection race test with `npm run db:test-concurrency`; it verifies that concurrent allocations cannot both overdraw the same source batch.
 
 ## Backup and restore runbook
 
