@@ -561,7 +561,9 @@ export default function DashboardPage() {
       current.roles.includes("administrator") ? apiRequest("/users") : Promise.resolve([]),
       current.roles.includes("administrator") ? apiRequest("/roles") : Promise.resolve([]),
       canManage ? apiRequest("/materials/overview") : Promise.resolve({batches:[],segregations:[],destinations:[],allocations:[]}),
-      canWork ? apiRequest("/cleaning-rounds") : Promise.resolve([])
+      canWork ? apiRequest("/cleaning-rounds") : Promise.resolve([]),
+      current.roles.includes("administrator") ? apiRequest("/fest") : Promise.resolve(null),
+      current.roles.includes("administrator") ? apiRequest("/audit-logs?page=1&pageSize=50") : Promise.resolve([])
     ]);
     setReports(reportPayload ?? []);
     setTasks(taskPayload ?? []);
