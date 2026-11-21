@@ -23,12 +23,12 @@ Administrator · Fest Organizer · Waste Manager · Team Lead · Volunteer/Colle
 5. Teams, volunteer assignments, workload, and progress.
 6. Collection evidence, weight, verification, segregation, recycling, and disposal.
 7. In-app notifications and announcements.
-8. Dashboards, analytics, CSV export, final event report, and audit logs.
+8. Dashboards, analytics, date-scoped printable final fest report, CSV export, and audit logs.
 
 Advanced QR, live map, SMS/WhatsApp, offline sync, IoT, and AI classification are deferred until core operations are stable.
 
 ## Planned stack
-Node.js 24.x · TypeScript · Next.js (web) · Express 5 (API) · PostgreSQL · parameterized SQL via pg · server-managed sessions · Vitest/Supertest · GitHub Actions (Playwright end-to-end suite planned for final hardening).
+Node.js 24.x · TypeScript · Next.js (web) · Express 5 (API) · PostgreSQL · parameterized SQL via pg · server-managed sessions · Vitest/Supertest · GitHub Actions (API/database regression and concurrent-allocation verification; browser E2E remains a hardening gate).
 
 Direct dependency versions are pinned in workspace manifests. The npm lockfile is committed and clean-install verification runs in CI. The API is the business-rule and authorization boundary. The first release uses a modular monolith, not microservices.
 
@@ -63,10 +63,10 @@ Never commit real credentials, session secrets, database passwords, or private u
 - [x] Report lifecycle, duplicate linking, public tracking, manager notes, private evidence uploads and evidence-review screens implemented.
 - [x] Location/category administration, teams, memberships, rounds, tasks, assignments, collection submissions and manager decisions implemented.
 - [x] Verified-only material batches, segregation, destinations, allocations and database balance guards implemented.
-- [x] In-app notifications, announcements, analytics, CSV exports, fest settings and audit-log screens implemented.
+- [x] In-app notifications, announcements, analytics, date-scoped printable final fest report, CSV exports, fest settings and audit-log screens implemented.
 - [x] CI passed on 2026-11-21 for commit `f879b7237e8e4e63cee4441e07be04ce5c561a58`: clean `npm ci`, `npm audit` (0 advisories), typecheck, lint, 11 Vitest tests, PostgreSQL 16 schema verification, database smoke tests, reporting SQL, PostgreSQL 16 dump/restore round-trip verification and production build.
-- [ ] Add broad role/resource authorization and lifecycle regression coverage plus browser-level end-to-end journeys.
-- [ ] Add a tested backup/restore drill and production deployment configuration.
+- [ ] Expand role/resource authorization and lifecycle regression coverage; add browser-level journeys.
+- [x] CI verifies PostgreSQL backup/restore and a two-connection concurrent-allocation race; production file+database restore and deployment still require operator configuration.
 - [ ] Complete operational security review and confirm fest-specific settings, privacy/retention policy, hosting and persistent private storage before production use.
 
 The core implementation is not a production deployment. Keep this branch unmerged until the remaining verification and operational gates are complete and the owner explicitly approves integration.
