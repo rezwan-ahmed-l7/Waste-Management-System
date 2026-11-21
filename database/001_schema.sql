@@ -500,7 +500,7 @@ FOR EACH ROW EXECUTE FUNCTION enforce_material_allocation_balance();
 
 -- A task cannot be verified without a verified collection submission unless
 -- an authorized manager explicitly records a no-waste/false-alarm reason.
-CREATE FUNCTION validate_task_verification() RETURNS TRIGGER LANGUAGE plpgsql AS $
+CREATE FUNCTION validate_task_verification() RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN
   IF NEW.status='verified' AND OLD.status IS DISTINCT FROM 'verified' THEN
     IF NOT EXISTS (
@@ -512,14 +512,14 @@ BEGIN
     NEW.completed_at := COALESCE(NEW.completed_at, now());
   END IF;
   RETURN NEW;
-END; $;
+END; $$;
 CREATE TRIGGER trg_task_verification_guard
 BEFORE UPDATE OF status ON collection_tasks
 FOR EACH ROW EXECUTE FUNCTION validate_task_verification();
 
 -- Auditing captures row snapshots for selected operational entities.
 -- The API sets app.actor_user_id and app.request_id with SET LOCAL per transaction.
-CREATE FUNCTION audit_row_change() RETURNS TRIGGER LANGUAGE plpgsql AS $
+CREATE FUNCTION audit_row_change() RETURNS TRIGGER LANGUAGE plpgsql AS $$
 DECLARE
   v_actor UUID;
   v_request_id TEXT;
@@ -555,7 +555,7 @@ BEGIN
   );
   IF TG_OP='DELETE' THEN RETURN OLD; END IF;
   RETURN NEW;
-END; $;
+END; $$;
 CREATE TRIGGER trg_audit_reports AFTER INSERT OR UPDATE OR DELETE ON waste_reports
 FOR EACH ROW EXECUTE FUNCTION audit_row_change('report_id');
 CREATE TRIGGER trg_audit_tasks AFTER INSERT OR UPDATE OR DELETE ON collection_tasks
