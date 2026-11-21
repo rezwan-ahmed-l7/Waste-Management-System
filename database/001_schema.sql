@@ -475,8 +475,12 @@ BEGIN
     SELECT available_weight_kg INTO v_available FROM material_batches
       WHERE batch_id=NEW.source_batch_id FOR UPDATE;
     IF NOT FOUND THEN RAISE EXCEPTION 'Source material batch does not exist'; END IF;
-    SELECT COALESCE(SUM(weight_kg),0) INTO v_used FROM material_allocations
-      WHERE source_batch_id=NEW.source_batch_id AND allocation_id <> NEW.allocation_id;
+    SELECT
+      COALESCE((SELECT SUM(weight_kg) FROM material_allocations
+        WHERE source_batch_id=NEW.source_batch_id AND allocation_id <> NEW.allocation_id),0)
+      + COALESCE((SELECT SUM(weight_kg) FROM segregation_records
+        WHERE source_batch_id=NEW.source_batch_id),0)
+    INTO v_used;
   ELSE
     SELECT weight_kg INTO v_available FROM segregation_records
       WHERE segregation_id=NEW.source_segregation_id FOR UPDATE;
@@ -536,10 +540,18 @@ BEGIN
     v_old := to_jsonb(OLD);
     v_entity_id := v_old ->> TG_ARGV[0];
   END IF;
+  -- Keep audit metadata intentionally narrow: never persist names, contacts,
+  -- report descriptions, passwords, session hashes, or uploaded file details.
   INSERT INTO audit_logs(actor_user_id,action,entity_type,entity_id,request_id,safe_metadata)
   VALUES (
     v_actor, TG_OP, TG_TABLE_NAME, COALESCE(v_entity_id,'unknown'), v_request_id,
-    jsonb_build_object('old',v_old,'new',v_new)
+    jsonb_strip_nulls(jsonb_build_object(
+      'old_status',v_old->>'status',
+      'new_status',v_new->>'status',
+      'old_priority',v_old->>'priority',
+      'new_priority',v_new->>'priority',
+      'weight_kg',COALESCE(v_new->>'weight_kg',v_old->>'weight_kg')
+    ))
   );
   IF TG_OP='DELETE' THEN RETURN OLD; END IF;
   RETURN NEW;
@@ -574,11 +586,18 @@ GROUP BY wc.category_id, wc.name;
 
 CREATE VIEW v_material_balance AS
 SELECT mb.batch_id, mb.available_weight_kg,
-       COALESCE(SUM(ma.weight_kg),0) AS allocated_weight_kg,
-       mb.available_weight_kg-COALESCE(SUM(ma.weight_kg),0) AS remaining_weight_kg
+       COALESCE(seg.total_kg,0) + COALESCE(direct_alloc.total_kg,0) AS committed_weight_kg,
+       mb.available_weight_kg - COALESCE(seg.total_kg,0) - COALESCE(direct_alloc.total_kg,0) AS remaining_weight_kg
 FROM material_batches mb
-LEFT JOIN material_allocations ma ON ma.source_batch_id=mb.batch_id
-GROUP BY mb.batch_id, mb.available_weight_kg;
+LEFT JOIN (
+  SELECT source_batch_id, SUM(weight_kg) AS total_kg
+  FROM segregation_records GROUP BY source_batch_id
+) seg ON seg.source_batch_id=mb.batch_id
+LEFT JOIN (
+  SELECT source_batch_id, SUM(weight_kg) AS total_kg
+  FROM material_allocations WHERE source_batch_id IS NOT NULL
+  GROUP BY source_batch_id
+) direct_alloc ON direct_alloc.source_batch_id=mb.batch_id;
 
 -- Reference data only. No seeded credentials or default administrator.
 INSERT INTO roles(role_key,display_name,description) VALUES
