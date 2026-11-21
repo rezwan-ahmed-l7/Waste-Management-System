@@ -463,6 +463,137 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
 
 
 
+
+  app.get("/api/v1/locations", authenticate(database), requirePermission(database, "locations.manage"), async (_req,res,next)=>{
+    try {
+      const [zones,areas,bins] = await Promise.all([
+        database.query("SELECT zone_id AS \"zoneId\",code,name,description,is_active AS \"isActive\" FROM waste_mgmt.zones WHERE fest_id=1 ORDER BY name"),
+        database.query("SELECT area_id AS \"areaId\",zone_id AS \"zoneId\",parent_area_id AS \"parentAreaId\",code,name,is_active AS \"isActive\" FROM waste_mgmt.areas WHERE fest_id=1 ORDER BY name"),
+        database.query("SELECT b.bin_id AS \"binId\",b.area_id AS \"areaId\",b.code,b.capacity_kg AS \"capacityKg\",b.is_active AS \"isActive\",wc.name AS \"categoryName\" FROM waste_mgmt.bins b LEFT JOIN waste_mgmt.waste_categories wc ON wc.category_id=b.category_id WHERE b.fest_id=1 ORDER BY b.code")
+      ]);
+      res.status(200).json({data:{zones:zones.rows,areas:areas.rows,bins:bins.rows}});
+    } catch(error){next(error);}
+  });
+
+  app.post("/api/v1/zones", authenticate(database), requirePermission(database, "locations.manage"), async (req,res,next)=>{
+    const body=z.object({code:z.string().trim().min(2).max(40).regex(/^[A-Za-z0-9_-]+$/),name:z.string().trim().min(2).max(100),description:z.string().trim().max(1000).optional()}).strict().safeParse(req.body);
+    if(!body.success){res.status(400).json({error:{code:"VALIDATION_ERROR",message:"Invalid zone details."}});return;}
+    try{
+      const result=await database.query(
+        "INSERT INTO waste_mgmt.zones(fest_id,code,name,description) VALUES (1,$1,$2,$3) RETURNING zone_id AS \"zoneId\",code,name",
+        [body.data.code.toUpperCase(),body.data.name,body.data.description??null]
+      );
+      res.status(201).json({data:result.rows[0]});
+    }catch(error){next(error);}
+  });
+
+  app.post("/api/v1/areas", authenticate(database), requirePermission(database, "locations.manage"), async (req,res,next)=>{
+    const body=z.object({zoneId:z.string().uuid(),parentAreaId:z.string().uuid().optional(),code:z.string().trim().min(2).max(40).regex(/^[A-Za-z0-9_-]+$/),name:z.string().trim().min(2).max(120),description:z.string().trim().max(1000).optional()}).strict().safeParse(req.body);
+    if(!body.success){res.status(400).json({error:{code:"VALIDATION_ERROR",message:"Invalid area details."}});return;}
+    try{
+      const zone=await database.query("SELECT zone_id FROM waste_mgmt.zones WHERE zone_id=$1 AND fest_id=1 AND is_active=TRUE",[body.data.zoneId]);
+      if(zone.rowCount!==1){res.status(422).json({error:{code:"INVALID_ZONE",message:"The selected zone is not active."}});return;}
+      if(body.data.parentAreaId){
+        const parent=await database.query("SELECT area_id FROM waste_mgmt.areas WHERE area_id=$1 AND zone_id=$2 AND is_active=TRUE",[body.data.parentAreaId,body.data.zoneId]);
+        if(parent.rowCount!==1){res.status(422).json({error:{code:"INVALID_PARENT_AREA",message:"Parent area must be active and belong to the selected zone."}});return;}
+      }
+      const result=await database.query(
+        "INSERT INTO waste_mgmt.areas(fest_id,zone_id,parent_area_id,code,name,description) VALUES (1,$1,$2,$3,$4,$5) RETURNING area_id AS \"areaId\",zone_id AS \"zoneId\",code,name",
+        [body.data.zoneId,body.data.parentAreaId??null,body.data.code.toUpperCase(),body.data.name,body.data.description??null]
+      );
+      res.status(201).json({data:result.rows[0]});
+    }catch(error){next(error);}
+  });
+
+  app.post("/api/v1/bins", authenticate(database), requirePermission(database, "locations.manage"), async (req,res,next)=>{
+    const body=z.object({areaId:z.string().uuid(),code:z.string().trim().min(2).max(40).regex(/^[A-Za-z0-9_-]+$/),categoryId:z.coerce.number().int().positive().optional(),capacityKg:z.coerce.number().positive().max(100000).optional()}).strict().safeParse(req.body);
+    if(!body.success){res.status(400).json({error:{code:"VALIDATION_ERROR",message:"Invalid bin details."}});return;}
+    try{
+      const area=await database.query("SELECT area_id FROM waste_mgmt.areas WHERE area_id=$1 AND fest_id=1 AND is_active=TRUE",[body.data.areaId]);
+      if(area.rowCount!==1){res.status(422).json({error:{code:"INVALID_AREA",message:"The selected area is not active."}});return;}
+      if(body.data.categoryId){
+        const category=await database.query("SELECT category_id FROM waste_mgmt.waste_categories WHERE category_id=$1 AND is_active=TRUE",[body.data.categoryId]);
+        if(category.rowCount!==1){res.status(422).json({error:{code:"INVALID_CATEGORY",message:"The selected waste category is not active."}});return;}
+      }
+      const result=await database.query(
+        "INSERT INTO waste_mgmt.bins(fest_id,area_id,code,category_id,capacity_kg) VALUES (1,$1,$2,$3,$4) RETURNING bin_id AS \"binId\",area_id AS \"areaId\",code,capacity_kg AS \"capacityKg\"",
+        [body.data.areaId,body.data.code.toUpperCase(),body.data.categoryId??null,body.data.capacityKg??null]
+      );
+      res.status(201).json({data:result.rows[0]});
+    }catch(error){next(error);}
+  });
+
+  app.post("/api/v1/waste-categories", authenticate(database), requirePermission(database, "locations.manage"), async (req,res,next)=>{
+    const body=z.object({code:z.string().trim().min(2).max(40).regex(/^[A-Za-z0-9_-]+$/),name:z.string().trim().min(2).max(80),description:z.string().trim().max(1000).optional(),isRecyclable:z.boolean().default(false)}).strict().safeParse(req.body);
+    if(!body.success){res.status(400).json({error:{code:"VALIDATION_ERROR",message:"Invalid waste category details."}});return;}
+    try{
+      const result=await database.query(
+        "INSERT INTO waste_mgmt.waste_categories(code,name,description,is_recyclable) VALUES ($1,$2,$3,$4) RETURNING category_id AS \"categoryId\",code,name,is_recyclable AS \"isRecyclable\"",
+        [body.data.code.toLowerCase(),body.data.name,body.data.description??null,body.data.isRecyclable]
+      );
+      res.status(201).json({data:result.rows[0]});
+    }catch(error){next(error);}
+  });
+
+  app.patch("/api/v1/zones/:zoneId/status", authenticate(database), requirePermission(database, "locations.manage"), async (req,res,next)=>{
+    const id=z.string().uuid().safeParse(req.params.zoneId);
+    const body=z.object({isActive:z.boolean()}).strict().safeParse(req.body);
+    if(!id.success||!body.success){res.status(400).json({error:{code:"VALIDATION_ERROR",message:"Invalid zone status update."}});return;}
+    try{
+      const client=await database.connect();
+      try{
+        await client.query("BEGIN");
+        await client.query("UPDATE waste_mgmt.zones SET is_active=$1 WHERE zone_id=$2 AND fest_id=1",[body.data.isActive,id.data]);
+        if(!body.data.isActive){
+          await client.query("UPDATE waste_mgmt.areas SET is_active=FALSE WHERE zone_id=$1",[id.data]);
+          await client.query("UPDATE waste_mgmt.bins SET is_active=FALSE WHERE area_id IN (SELECT area_id FROM waste_mgmt.areas WHERE zone_id=$1)",[id.data]);
+        }
+        await client.query("COMMIT");
+        res.status(200).json({data:{zoneId:id.data,isActive:body.data.isActive}});
+      }catch(error){await client.query("ROLLBACK").catch(()=>undefined);throw error;}
+      finally{client.release();}
+    }catch(error){next(error);}
+  });
+
+  app.patch("/api/v1/areas/:areaId/status", authenticate(database), requirePermission(database, "locations.manage"), async (req,res,next)=>{
+    const id=z.string().uuid().safeParse(req.params.areaId);
+    const body=z.object({isActive:z.boolean()}).strict().safeParse(req.body);
+    if(!id.success||!body.success){res.status(400).json({error:{code:"VALIDATION_ERROR",message:"Invalid area status update."}});return;}
+    try{
+      const client=await database.connect();
+      try{
+        await client.query("BEGIN");
+        await client.query("UPDATE waste_mgmt.areas SET is_active=$1 WHERE area_id=$2 AND fest_id=1",[body.data.isActive,id.data]);
+        if(!body.data.isActive)await client.query("UPDATE waste_mgmt.bins SET is_active=FALSE WHERE area_id=$1",[id.data]);
+        await client.query("COMMIT");
+        res.status(200).json({data:{areaId:id.data,isActive:body.data.isActive}});
+      }catch(error){await client.query("ROLLBACK").catch(()=>undefined);throw error;}
+      finally{client.release();}
+    }catch(error){next(error);}
+  });
+
+  app.patch("/api/v1/bins/:binId/status", authenticate(database), requirePermission(database, "locations.manage"), async (req,res,next)=>{
+    const id=z.string().uuid().safeParse(req.params.binId);
+    const body=z.object({isActive:z.boolean()}).strict().safeParse(req.body);
+    if(!id.success||!body.success){res.status(400).json({error:{code:"VALIDATION_ERROR",message:"Invalid bin status update."}});return;}
+    try{
+      const result=await database.query("UPDATE waste_mgmt.bins SET is_active=$1 WHERE bin_id=$2 AND fest_id=1 RETURNING bin_id AS \"binId\",is_active AS \"isActive\"",[body.data.isActive,id.data]);
+      if(!result.rows[0]){res.status(404).json({error:{code:"BIN_NOT_FOUND",message:"Bin not found."}});return;}
+      res.status(200).json({data:result.rows[0]});
+    }catch(error){next(error);}
+  });
+
+  app.patch("/api/v1/waste-categories/:categoryId/status", authenticate(database), requirePermission(database, "locations.manage"), async (req,res,next)=>{
+    const id=z.coerce.number().int().positive().safeParse(req.params.categoryId);
+    const body=z.object({isActive:z.boolean()}).strict().safeParse(req.body);
+    if(!id.success||!body.success){res.status(400).json({error:{code:"VALIDATION_ERROR",message:"Invalid category status update."}});return;}
+    try{
+      const result=await database.query("UPDATE waste_mgmt.waste_categories SET is_active=$1 WHERE category_id=$2 RETURNING category_id AS \"categoryId\",is_active AS \"isActive\"",[body.data.isActive,id.data]);
+      if(!result.rows[0]){res.status(404).json({error:{code:"CATEGORY_NOT_FOUND",message:"Waste category not found."}});return;}
+      res.status(200).json({data:result.rows[0]});
+    }catch(error){next(error);}
+  });
+
   app.get("/api/v1/users/assignable", authenticate(database), requirePermission(database, "tasks.manage"), async (_req, res, next) => {
     try {
       const result = await database.query(
