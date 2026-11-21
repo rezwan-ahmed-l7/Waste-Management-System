@@ -48,8 +48,8 @@ Controllers remain thin. Domain services own business rules. Data access is isol
     apps/web/                 Next.js frontend
     apps/api/                 Express API
     packages/contracts/       Shared schemas/types if justified
-    prisma/schema.prisma
-    prisma/migrations/
+    database/001_schema.sql
+    database/README.md
     prisma/seed/
     docs/                     The four detailed project documents
     .github/workflows/
