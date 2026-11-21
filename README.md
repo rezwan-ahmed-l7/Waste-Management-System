@@ -28,9 +28,9 @@ Administrator · Fest Organizer · Waste Manager · Team Lead · Volunteer/Colle
 Advanced QR, live map, SMS/WhatsApp, offline sync, IoT, and AI classification are deferred until core operations are stable.
 
 ## Planned stack
-Node.js 24.x · TypeScript · Next.js (web) · Express 5 (API) · PostgreSQL · parameterized SQL via pg · server-managed sessions · Vitest/Supertest/Playwright · GitHub Actions.
+Node.js 24.x · TypeScript · Next.js (web) · Express 5 (API) · PostgreSQL · parameterized SQL via pg · server-managed sessions · Vitest/Supertest · GitHub Actions (Playwright end-to-end suite planned for final hardening).
 
-Direct dependency versions are pinned in workspace manifests. The npm lockfile and clean-install verification remain outstanding. The API is the business-rule and authorization boundary. The first release uses a modular monolith, not microservices.
+Direct dependency versions are pinned in workspace manifests. The npm lockfile is committed and clean-install verification runs in CI. The API is the business-rule and authorization boundary. The first release uses a modular monolith, not microservices.
 
 ## Documentation (five files maximum)
 - [Project Specification](docs/PROJECT_SPECIFICATION.md) — scope, roles, requirements, workflows, business rules, acceptance criteria.
@@ -43,7 +43,7 @@ Direct dependency versions are pinned in workspace manifests. The npm lockfile a
 The PostgreSQL schema is maintained in `database/001_schema.sql`. Create a local `waste_management` database, apply the schema with `psql -v ON_ERROR_STOP=1 -d waste_management -f database/001_schema.sql`, then verify tables, constraints, views, and triggers using `database/README.md`.
 
 ## Local setup
-Prerequisites: Node.js 24.x, npm, Git, and PostgreSQL 15+. Run `npm install`, copy `.env.example` to `.env`, set `DATABASE_URL`, create the `waste_management` database, and apply `database/001_schema.sql`. Start the API with `npm run dev:api` and the web app with `npm run dev:web`. Run `npm run typecheck`, `npm run lint`, `npm test`, `npm run db:verify`, and `npm run build`.
+Prerequisites: Node.js 24.x, npm, Git, and PostgreSQL 15+. Run `npm ci`, copy `.env.example` to `.env`, set `DATABASE_URL` and `PRIVATE_STORAGE_DIR`, create the `waste_management` database, and apply `database/001_schema.sql`. Start the API with `npm run dev:api` and the web app with `npm run dev:web`. Run `npm run typecheck`, `npm run lint`, `npm test`, `npm run db:verify`, and `npm run build`. Run `database/002_smoke_test.sql` for database integrity checks and `database/003_reporting_queries.sql` for the DBMS reporting-query suite.
 
 Never commit real credentials, session secrets, database passwords, or private user-uploaded files. Only placeholder values belong in .env.example.
 
@@ -60,6 +60,11 @@ Never commit real credentials, session secrets, database passwords, or private u
 - [x] Repository inspected; initial branch created.
 - [x] Documentation cross-verification (five-file limit, links, role/status alignment, workflows, and data integrity rules reviewed).
 - [x] Single-fest scope, anonymous reporting, and English database naming confirmed.
-- [ ] PostgreSQL schema runtime verification.
-- [x] Initial web/API workspace and anonymous reporting vertical slice scaffolded.
-- [ ] Complete remaining application modules and verification.
+- [x] PostgreSQL schema runtime verification and database integrity smoke tests pass on a fresh PostgreSQL 16 instance.
+- [x] Node/TypeScript workspace, API, web app, shared contracts, login/session authorization and administrator account management.
+- [x] Anonymous reports, private tracking, status history, manager review, notes and private evidence uploads.
+- [x] Zones, areas, bins, waste categories, teams, memberships, cleaning rounds, tasks and assignments.
+- [x] Collection submissions, manager verification/rejection, no-waste closure, material segregation and allocation.
+- [x] In-app notifications, announcements, analytics and CSV exports.
+- [x] CI typecheck, lint, automated tests, PostgreSQL schema/smoke checks and production build pass; npm audit reports no advisories.
+- [ ] Finish evidence-review UI, audit/fest administration screens, Playwright end-to-end tests, backup/restore and deployment handover.
