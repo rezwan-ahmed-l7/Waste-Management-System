@@ -1086,6 +1086,83 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
   });
 
 
+
+  app.get("/api/v1/analytics/overview", authenticate(database), requirePermission(database, "analytics.read"), async (_req, res, next) => {
+    try {
+      const [reportCounts,taskCounts,verifiedWeights,destinationWeights,remainingWeight,zoneReports] = await Promise.all([
+        database.query("SELECT status,COUNT(*)::int AS count FROM waste_mgmt.waste_reports WHERE fest_id=1 GROUP BY status ORDER BY status"),
+        database.query("SELECT status,COUNT(*)::int AS count FROM waste_mgmt.collection_tasks WHERE fest_id=1 GROUP BY status ORDER BY status"),
+        database.query("SELECT category_name AS \"categoryName\",verified_weight_kg AS \"weightKg\",verified_record_count AS \"recordCount\" FROM waste_mgmt.v_verified_collection_totals ORDER BY verified_weight_kg DESC"),
+        database.query("SELECT md.destination_type AS \"destinationType\",SUM(ma.weight_kg) AS \"weightKg\" " +
+          "FROM waste_mgmt.material_allocations ma JOIN waste_mgmt.material_destinations md ON md.destination_id=ma.destination_id " +
+          "GROUP BY md.destination_type ORDER BY md.destination_type"),
+        database.query("SELECT COALESCE(SUM(remaining_weight_kg),0) AS \"remainingWeightKg\" FROM waste_mgmt.v_material_balance"),
+        database.query("SELECT z.name AS \"zoneName\",COUNT(r.report_id)::int AS \"reportCount\" " +
+          "FROM waste_mgmt.zones z LEFT JOIN waste_mgmt.areas a ON a.zone_id=z.zone_id " +
+          "LEFT JOIN waste_mgmt.waste_reports r ON r.area_id=a.area_id " +
+          "GROUP BY z.zone_id,z.name ORDER BY \"reportCount\" DESC")
+      ]);
+      res.status(200).json({
+        data: {
+          reportCounts: reportCounts.rows,
+          taskCounts: taskCounts.rows,
+          verifiedWeights: verifiedWeights.rows,
+          destinationWeights: destinationWeights.rows,
+          remainingWeightKg: remainingWeight.rows[0]?.remainingWeightKg ?? 0,
+          reportsByZone: zoneReports.rows
+        }
+      });
+    } catch (error) { next(error); }
+  });
+
+  app.get("/api/v1/analytics/export.csv", authenticate(database), requirePermission(database, "analytics.read"), async (req, res, next) => {
+    const query = z.object({ type: z.enum(["reports","tasks","collections"]) }).safeParse(req.query);
+    if (!query.success) {
+      res.status(400).json({ error: { code: "INVALID_EXPORT_TYPE", message: "Choose reports, tasks, or collections." } });
+      return;
+    }
+    const csvCell = (value: unknown) => {
+      let text = value === null || value === undefined ? "" : String(value);
+      if (/^[=+@-]/.test(text)) text = "'" + text;
+      return '"' + text.replace(/"/g,'""') + '"';
+    };
+    try {
+      let headers: string[];
+      let rows: Record<string,unknown>[];
+      if (query.data.type === "reports") {
+        headers = ["reportId","status","priority","submittedAt","zone","area","category","description"];
+        const result = await database.query(
+          "SELECT r.report_id AS \"reportId\",r.status,r.priority,r.submitted_at AS \"submittedAt\",z.name AS zone,a.name AS area,wc.name AS category,r.description " +
+          "FROM waste_mgmt.waste_reports r JOIN waste_mgmt.areas a ON a.area_id=r.area_id " +
+          "JOIN waste_mgmt.zones z ON z.zone_id=a.zone_id JOIN waste_mgmt.waste_categories wc ON wc.category_id=r.category_id " +
+          "WHERE r.fest_id=1 ORDER BY r.submitted_at DESC LIMIT 10000"
+        );
+        rows = result.rows;
+      } else if (query.data.type === "tasks") {
+        headers = ["taskId","title","status","priority","dueAt","zone","area"];
+        const result = await database.query(
+          "SELECT t.task_id AS \"taskId\",t.title,t.status,t.priority,t.due_at AS \"dueAt\",z.name AS zone,a.name AS area " +
+          "FROM waste_mgmt.collection_tasks t JOIN waste_mgmt.areas a ON a.area_id=t.area_id " +
+          "JOIN waste_mgmt.zones z ON z.zone_id=a.zone_id WHERE t.fest_id=1 ORDER BY t.created_at DESC LIMIT 10000"
+        );
+        rows = result.rows;
+      } else {
+        headers = ["submissionId","taskId","category","weightKg","measurementMethod","measuredAt"];
+        const result = await database.query(
+          "SELECT cs.submission_id AS \"submissionId\",cr.submission_id AS \"taskId\",wc.name AS category,cr.weight_kg AS \"weightKg\",cr.measurement_method AS \"measurementMethod\",cr.measured_at AS \"measuredAt\" " +
+          "FROM waste_mgmt.collection_records cr JOIN waste_mgmt.collection_submissions cs ON cs.submission_id=cr.submission_id " +
+          "JOIN waste_mgmt.waste_categories wc ON wc.category_id=cr.category_id WHERE cs.status='verified' " +
+          "ORDER BY cr.measured_at DESC LIMIT 10000"
+        );
+        rows = result.rows;
+      }
+      const csv = [headers.map(csvCell).join(","),...rows.map(row=>headers.map(header=>csvCell(row[header])).join(","))].join("\r\n");
+      res.setHeader("Content-Type","text/csv; charset=utf-8");
+      res.setHeader("Content-Disposition",'attachment; filename="baust-cse-fest-'+query.data.type+'.csv"');
+      res.status(200).send("\uFEFF"+csv);
+    } catch (error) { next(error); }
+  });
+
   app.get("/api/v1/notifications", authenticate(database), async (req, res, next) => {
     const auth = req.auth;
     if (!auth) {
