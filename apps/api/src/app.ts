@@ -671,7 +671,7 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
       const pageValues=[...values,filters.data.pageSize,(filters.data.page-1)*filters.data.pageSize];
       const rows=await database.query(
         "SELECT audit_log_id AS \"auditLogId\",entity_type AS \"entityType\",entity_id AS \"entityId\",action, " +
-        "changed_by AS \"changedBy\",created_at AS \"createdAt\",safe_metadata AS \"safeMetadata\",request_id AS \"requestId\" " +
+        "actor_user_id AS \"actorUserId\",created_at AS \"createdAt\",safe_metadata AS \"safeMetadata\",request_id AS \"requestId\" " +
         "FROM waste_mgmt.audit_logs "+clause+" ORDER BY created_at DESC,audit_log_id DESC " +
         "LIMIT $"+(values.length+1)+" OFFSET $"+(values.length+2),
         pageValues
