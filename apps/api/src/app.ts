@@ -578,6 +578,12 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
       try{
         await client.query("BEGIN");
         await client.query("SELECT set_config('app.actor_user_id',$1,true)",[auth.userId]);
+        const targetUser=await client.query("SELECT user_id FROM waste_mgmt.users WHERE user_id=$1 FOR UPDATE",[id.data]);
+        if(targetUser.rowCount!==1){
+          await client.query("ROLLBACK");
+          res.status(404).json({error:{code:"USER_NOT_FOUND",message:"User not found."}});
+          return;
+        }
         const roleRows=await client.query("SELECT role_id,role_key FROM waste_mgmt.roles WHERE role_id=ANY($1::smallint[])",[body.data.roleIds]);
         if(roleRows.rowCount!==new Set(body.data.roleIds).size){
           await client.query("ROLLBACK");
@@ -1773,6 +1779,17 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
     const status = typeof error === "object" && error !== null && "status" in error
       ? Number((error as { status?: unknown }).status)
       : 500;
+    const databaseCode = typeof error === "object" && error !== null && "code" in error
+      ? String((error as { code?: unknown }).code)
+      : "";
+    if (databaseCode === "23505" || databaseCode === "40001") {
+      res.status(409).json({ error: { code: "CONFLICT", message: "The requested change conflicts with existing data.", requestId: res.locals.requestId } });
+      return;
+    }
+    if (databaseCode === "23503" || databaseCode === "23514" || databaseCode === "22P02") {
+      res.status(422).json({ error: { code: "DATA_CONSTRAINT", message: "The submitted data violates a database rule.", requestId: res.locals.requestId } });
+      return;
+    }
     if (status === 400) {
       res.status(400).json({ error: { code: "INVALID_JSON", message: "Request body contains invalid JSON." } });
       return;
