@@ -173,7 +173,7 @@ A feature is done only when requirements and permissions are documented; UI/API/
 - [x] Resolve all npm audit findings in the locked dependency tree.
 - [ ] Add browser-level journeys and broader role/resource authorization regression tests.
 - [x] Verify PostgreSQL dump/restore round trip and schema/smoke/reporting checks in CI; production evidence-file backup remains an operator task.
-- [ ] Add production deployment configuration for the chosen host and persistent private storage.
+- [x] Add Docker Compose/Caddy deployment template, private evidence volume and bootstrap instructions; actual DNS/host provisioning remains operator-owned.
 - [ ] Complete final security, privacy/retention and operational review.
 
 Do not mark a phase complete until its exit-gate evidence exists. A checked implementation item does not mean the whole phase is complete.
