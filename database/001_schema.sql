@@ -715,6 +715,7 @@ INSERT INTO permissions(permission_key,description) VALUES
  ('locations.manage','Manage zones, areas and bins'),
  ('reports.read','Read reports'),
  ('reports.review','Review and update reports'),
+ ('tasks.read','Read permitted collection tasks'),
  ('tasks.manage','Create and assign collection tasks'),
  ('tasks.execute','Execute assigned tasks'),
  ('collections.submit','Submit collection evidence'),
@@ -736,15 +737,15 @@ WHERE r.role_key='fest_organizer';
 INSERT INTO role_permissions(role_id, permission_id)
 SELECT r.role_id, p.permission_id
 FROM roles r JOIN permissions p ON p.permission_key IN
- ('locations.manage','reports.read','reports.review','tasks.manage','collections.verify','materials.manage','analytics.read','announcements.manage')
+ ('locations.manage','reports.read','reports.review','tasks.read','tasks.manage','collections.verify','materials.manage','analytics.read','announcements.manage')
 WHERE r.role_key='waste_manager';
 INSERT INTO role_permissions(role_id, permission_id)
 SELECT r.role_id, p.permission_id
-FROM roles r JOIN permissions p ON p.permission_key IN ('reports.read','tasks.execute','collections.submit')
+FROM roles r JOIN permissions p ON p.permission_key IN ('reports.read','tasks.read','tasks.execute','collections.submit')
 WHERE r.role_key='team_lead';
 INSERT INTO role_permissions(role_id, permission_id)
 SELECT r.role_id, p.permission_id
-FROM roles r JOIN permissions p ON p.permission_key IN ('tasks.execute','collections.submit')
+FROM roles r JOIN permissions p ON p.permission_key IN ('tasks.read','tasks.execute','collections.submit')
 WHERE r.role_key='volunteer';
 
 INSERT INTO fest(fest_id,name,description,status)
