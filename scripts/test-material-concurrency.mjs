@@ -83,7 +83,7 @@ try {
       return "committed";
     } catch (error) {
       await client.query("ROLLBACK").catch(() => undefined);
-      if (error?.message?.includes("exceeds source batch quantity")) return "rejected";
+      if (error?.message?.includes("exceeds available source quantity")) return "rejected";
       throw error;
     } finally {
       client.release();
