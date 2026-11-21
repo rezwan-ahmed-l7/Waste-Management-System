@@ -66,3 +66,7 @@ jobs:
           psql -v ON_ERROR_STOP=1 postgresql://postgres:postgres@localhost:5432/waste_management_restore_check -f database/002_smoke_test.sql
           psql -v ON_ERROR_STOP=1 postgresql://postgres:postgres@localhost:5432/waste_management_restore_check -f database/003_reporting_queries.sql
       - run: npm run build
+      - name: Validate production Compose configuration
+        run: docker compose --env-file .env.production.example config --quiet
+      - name: Build production container image
+        run: docker build --build-arg NEXT_PUBLIC_API_BASE_URL=https://fest.example.edu/api/v1 -t baust-waste-management:ci .
