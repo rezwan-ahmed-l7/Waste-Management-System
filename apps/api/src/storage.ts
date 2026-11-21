@@ -39,7 +39,7 @@ function storageRoot() {
 }
 
 function safeOriginalName(name: string) {
-  const cleaned = basename(name).replace(/[\u0000-\u001f\u007f]/g, "").trim();
+  const cleaned = basename(name).split("").filter(character => {\n    const code = character.charCodeAt(0);\n    return code >= 0x20 && code !== 0x7f;\n  }).join("").trim();
   return (cleaned || "upload").slice(0, 255);
 }
 
