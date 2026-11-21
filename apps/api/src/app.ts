@@ -462,6 +462,178 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
 
 
 
+
+  app.get("/api/v1/users/assignable", authenticate(database), requirePermission(database, "tasks.manage"), async (_req, res, next) => {
+    try {
+      const result = await database.query(
+        "SELECT user_id AS \"userId\",full_name AS \"fullName\",normalized_email AS email " +
+        "FROM waste_mgmt.users WHERE status='active' ORDER BY full_name"
+      );
+      res.status(200).json({ data: result.rows });
+    } catch (error) { next(error); }
+  });
+
+  app.get("/api/v1/teams", authenticate(database), requirePermission(database, "tasks.manage"), async (_req, res, next) => {
+    try {
+      const result = await database.query(
+        "SELECT t.team_id AS \"teamId\",t.name,t.code,t.team_lead_user_id AS \"teamLeadUserId\", " +
+        "COUNT(tm.membership_id)::int AS \"activeMemberCount\" " +
+        "FROM waste_mgmt.teams t LEFT JOIN waste_mgmt.team_memberships tm ON tm.team_id=t.team_id AND tm.ends_at IS NULL " +
+        "WHERE t.is_active=TRUE GROUP BY t.team_id ORDER BY t.name"
+      );
+      res.status(200).json({ data: result.rows });
+    } catch (error) { next(error); }
+  });
+
+  app.post("/api/v1/teams", authenticate(database), requirePermission(database, "tasks.manage"), async (req, res, next) => {
+    const body = z.object({
+      name: z.string().trim().min(2).max(100),
+      code: z.string().trim().min(2).max(40).regex(/^[A-Za-z0-9_-]+$/),
+      teamLeadUserId: z.string().uuid().optional()
+    }).strict().safeParse(req.body);
+    if (!body.success || !req.auth) {
+      res.status(400).json({ error: { code: "VALIDATION_ERROR", message: "Invalid team details." } });
+      return;
+    }
+    try {
+      const client = await database.connect();
+      try {
+        await client.query("BEGIN");
+        if (body.data.teamLeadUserId) {
+          const lead = await client.query("SELECT user_id FROM waste_mgmt.users WHERE user_id=$1 AND status='active'",[body.data.teamLeadUserId]);
+          if (lead.rowCount !== 1) {
+            await client.query("ROLLBACK");
+            res.status(422).json({ error: { code: "INVALID_TEAM_LEAD", message: "The selected team lead is not active." } });
+            return;
+          }
+        }
+        const result = await client.query(
+          "INSERT INTO waste_mgmt.teams(name,code,team_lead_user_id) VALUES ($1,$2,$3) RETURNING team_id AS \"teamId\",name,code,team_lead_user_id AS \"teamLeadUserId\"",
+          [body.data.name,body.data.code.toUpperCase(),body.data.teamLeadUserId ?? null]
+        );
+        const team = result.rows[0];
+        if (body.data.teamLeadUserId && team) {
+          await client.query(
+            "INSERT INTO waste_mgmt.team_memberships(team_id,user_id,member_role) VALUES ($1,$2,'team_lead') ON CONFLICT DO NOTHING",
+            [team.teamId,body.data.teamLeadUserId]
+          );
+        }
+        await client.query("COMMIT");
+        res.status(201).json({ data: team });
+      } catch (error) {
+        await client.query("ROLLBACK").catch(() => undefined);
+        throw error;
+      } finally { client.release(); }
+    } catch (error) { next(error); }
+  });
+
+  app.post("/api/v1/teams/:teamId/members", authenticate(database), requirePermission(database, "tasks.manage"), async (req, res, next) => {
+    const teamId = z.string().uuid().safeParse(req.params.teamId);
+    const body = z.object({ userId: z.string().uuid(), memberRole: z.enum(["team_lead","volunteer"]).default("volunteer") }).strict().safeParse(req.body);
+    if (!teamId.success || !body.success) {
+      res.status(400).json({ error: { code: "VALIDATION_ERROR", message: "Invalid team membership." } });
+      return;
+    }
+    try {
+      const client = await database.connect();
+      try {
+        await client.query("BEGIN");
+        const team = await client.query("SELECT team_id FROM waste_mgmt.teams WHERE team_id=$1 AND is_active=TRUE FOR UPDATE",[teamId.data]);
+        const user = await client.query("SELECT user_id FROM waste_mgmt.users WHERE user_id=$1 AND status='active'",[body.data.userId]);
+        if (team.rowCount !== 1 || user.rowCount !== 1) {
+          await client.query("ROLLBACK");
+          res.status(422).json({ error: { code: "INVALID_MEMBERSHIP", message: "The team or user is not active." } });
+          return;
+        }
+        const membership = await client.query(
+          "INSERT INTO waste_mgmt.team_memberships(team_id,user_id,member_role) VALUES ($1,$2,$3) RETURNING membership_id AS \"membershipId\",team_id AS \"teamId\",user_id AS \"userId\",member_role AS \"memberRole\"",
+          [teamId.data,body.data.userId,body.data.memberRole]
+        );
+        if (body.data.memberRole === "team_lead") {
+          await client.query("UPDATE waste_mgmt.teams SET team_lead_user_id=$1 WHERE team_id=$2",[body.data.userId,teamId.data]);
+        }
+        await client.query("COMMIT");
+        res.status(201).json({ data: membership.rows[0] });
+      } catch (error) {
+        await client.query("ROLLBACK").catch(() => undefined);
+        throw error;
+      } finally { client.release(); }
+    } catch (error) { next(error); }
+  });
+
+  app.post("/api/v1/tasks/:taskId/assignments", authenticate(database), requirePermission(database, "tasks.manage"), async (req, res, next) => {
+    const taskId = z.string().uuid().safeParse(req.params.taskId);
+    const body = z.object({
+      userId: z.string().uuid().optional(),
+      teamId: z.string().uuid().optional(),
+      replaceExisting: z.boolean().default(false)
+    }).strict().safeParse(req.body);
+    const auth = req.auth;
+    if (!taskId.success || !body.success || !auth || Boolean(body.data.userId) === Boolean(body.data.teamId)) {
+      res.status(400).json({ error: { code: "VALIDATION_ERROR", message: "Choose exactly one active user or team to assign." } });
+      return;
+    }
+    try {
+      const client = await database.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query("SELECT set_config('app.actor_user_id',$1,true)",[auth.userId]);
+        const task = await client.query("SELECT task_id,status FROM waste_mgmt.collection_tasks WHERE task_id=$1 AND fest_id=1 FOR UPDATE",[taskId.data]);
+        if (!task.rows[0] || !["open","assigned"].includes(task.rows[0].status)) {
+          await client.query("ROLLBACK");
+          res.status(409).json({ error: { code: "INVALID_TASK_STATE", message: "Only open or assigned tasks can receive assignments." } });
+          return;
+        }
+        if (body.data.userId) {
+          const user = await client.query("SELECT user_id FROM waste_mgmt.users WHERE user_id=$1 AND status='active'",[body.data.userId]);
+          if (user.rowCount !== 1) {
+            await client.query("ROLLBACK");
+            res.status(422).json({ error: { code: "INVALID_ASSIGNEE", message: "The selected user is not active." } });
+            return;
+          }
+        }
+        if (body.data.teamId) {
+          const team = await client.query("SELECT team_id FROM waste_mgmt.teams WHERE team_id=$1 AND is_active=TRUE",[body.data.teamId]);
+          if (team.rowCount !== 1) {
+            await client.query("ROLLBACK");
+            res.status(422).json({ error: { code: "INVALID_TEAM", message: "The selected team is not active." } });
+            return;
+          }
+        }
+        if (body.data.replaceExisting) {
+          await client.query("UPDATE waste_mgmt.task_assignments SET unassigned_at=now() WHERE task_id=$1 AND unassigned_at IS NULL",[taskId.data]);
+        }
+        const result = await client.query(
+          "INSERT INTO waste_mgmt.task_assignments(task_id,user_id,team_id,assigned_by) VALUES ($1,$2,$3,$4) " +
+          "RETURNING assignment_id AS \"assignmentId\",task_id AS \"taskId\",user_id AS \"userId\",team_id AS \"teamId\",assigned_at AS \"assignedAt\"",
+          [taskId.data,body.data.userId ?? null,body.data.teamId ?? null,auth.userId]
+        );
+        if (task.rows[0].status === "open") {
+          await client.query("UPDATE waste_mgmt.collection_tasks SET status='assigned' WHERE task_id=$1",[taskId.data]);
+        }
+        if (body.data.userId) {
+          await client.query(
+            "INSERT INTO waste_mgmt.notifications(user_id,type,title,body,resource_type,resource_id) VALUES ($1,'task_assignment','New collection task','A task has been assigned to you.','task',$2)",
+            [body.data.userId,taskId.data]
+          );
+        } else if (body.data.teamId) {
+          await client.query(
+            "INSERT INTO waste_mgmt.notifications(user_id,type,title,body,resource_type,resource_id) " +
+            "SELECT tm.user_id,'task_assignment','New team task','A task has been assigned to your team.','task',$2 " +
+            "FROM waste_mgmt.team_memberships tm JOIN waste_mgmt.users u ON u.user_id=tm.user_id AND u.status='active' " +
+            "WHERE tm.team_id=$1 AND tm.ends_at IS NULL AND tm.starts_at<=now()",
+            [body.data.teamId,taskId.data]
+          );
+        }
+        await client.query("COMMIT");
+        res.status(201).json({ data: result.rows[0] });
+      } catch (error) {
+        await client.query("ROLLBACK").catch(() => undefined);
+        throw error;
+      } finally { client.release(); }
+    } catch (error) { next(error); }
+  });
+
   app.post("/api/v1/tasks/:taskId/close-no-waste", authenticate(database), requirePermission(database, "tasks.manage"), async (req, res, next) => {
     const id = z.string().uuid().safeParse(req.params.taskId);
     const body = z.object({ reason: z.string().trim().min(5).max(1000) }).strict().safeParse(req.body);
