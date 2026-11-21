@@ -110,7 +110,7 @@ The final fest report is generated for a required local date range, uses the con
 - Cookie-authenticated mutations reject a mismatched Origin; the session cookie is HttpOnly and SameSite=Lax. Validate browser deployment topology and add an explicit CSRF token if the web/API origin model changes.
 - CORS allows configured origins only; never wildcard with credentials.
 - Hash passwords using maintained Argon2id implementation and reviewed parameters.
-- Rate-limit login, anonymous report submission, and authenticated evidence uploads (per source IP). Configure trusted proxy handling and production edge-level abuse controls deliberately before public launch.
+- Rate-limit login, anonymous report submission, and authenticated evidence uploads (per source IP). TRUST_PROXY_HOPS is explicit and defaults to 0; the Compose Caddy topology sets 1 so Express sees the real client address without blindly trusting arbitrary forwarded headers.
 - Validate every request field and uploaded file; encode untrusted output.
 - Image uploads: allowlisted formats, inspect actual content type, enforce byte/dimension limits, server-generated names, private non-executable storage.
 - Evidence access is authorized; do not expose permanent public file URLs.
@@ -130,7 +130,7 @@ Application code uses a storage adapter, not provider-specific calls. Developmen
 
 ## 10. Configuration and operations
 
-Validate environment variables at startup and fail fast with safe messages. Commit .env.example only with placeholders. Current config includes DATABASE_URL, API_HOST/API_PORT, WEB_ORIGIN, NEXT_PUBLIC_API_BASE_URL, PRIVATE_STORAGE_DIR and public-report rate limits. Session tokens are random and stored only as hashes; no static session secret is required. The Docker Compose starter is a single-host Caddy/PostgreSQL deployment template; API and web processes run as non-root UID 1000, and an init container prepares the private evidence volume. Production must not silently fall back to insecure auth or public storage.
+Validate environment variables at startup and fail fast with safe messages. Commit .env.example only with placeholders. Current config includes DATABASE_URL, API_HOST/API_PORT, TRUST_PROXY_HOPS (default 0; set to 1 only behind the single trusted Caddy proxy), WEB_ORIGIN, NEXT_PUBLIC_API_BASE_URL, PRIVATE_STORAGE_DIR and report rate limits. Session tokens are random and stored only as hashes; no static session secret is required. The Docker Compose starter is a single-host Caddy/PostgreSQL deployment template; API and web processes run as non-root UID 1000, and an init container prepares the private evidence volume. Production must not silently fall back to insecure auth or public storage.
 
 Use structured logs with request IDs; health and readiness endpoints; avoid logging report text, personal details, cookies, secrets, or file content. Document backup/restore and test restore before production.
 
