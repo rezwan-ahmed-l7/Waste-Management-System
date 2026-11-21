@@ -69,8 +69,7 @@ Use a dedicated PostgreSQL role with the minimum required privileges. Store back
 PowerShell example (run from the repository root; replace the destination with a protected backup directory):
 
 ```powershell
-$env:PGPASSWORD = Read-Host "Database password" -AsSecureString | ConvertFrom-SecureString
-# Prefer pgpass/service-file authentication for unattended jobs.
+# Configure libpq passfile authentication (pgpass.conf) or supply PGPASSWORD securely in your local session.
 pg_dump -h localhost -U postgres -d waste_management -Fc -f "D:\Backups\waste_management.dump"
 pg_restore --list "D:\Backups\waste_management.dump"
 ```
