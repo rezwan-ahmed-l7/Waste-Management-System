@@ -4,18 +4,9 @@ import helmet from "helmet";
 import { rateLimit } from "express-rate-limit";
 import { createHash, randomBytes } from "node:crypto";
 import { z } from "zod";
+import { publicWasteReportSchema } from "@waste/contracts";
 import type { Pool } from "pg";
 import { env } from "./config.js";
-
-const reportSchema = z.object({
-  areaId: z.string().uuid(),
-  binId: z.string().uuid().optional(),
-  categoryId: z.coerce.number().int().positive(),
-  description: z.string().trim().min(10).max(3000),
-  reporterName: z.string().trim().max(120).optional(),
-  reporterContact: z.string().trim().max(254).optional(),
-  estimatedWeightKg: z.coerce.number().nonnegative().max(100000).optional()
-}).strict();
 
 type Database = Pick<Pool, "query" | "connect">;
 
@@ -33,6 +24,28 @@ export function createApp(database: Database) {
     legacyHeaders: false
   });
 
+  app.get("/api/v1/public/form-options", async (_req, res, next) => {
+    try {
+      const [areas, categories] = await Promise.all([
+        database.query(
+          `SELECT a.area_id AS "areaId", a.name AS "areaName", z.name AS "zoneName"
+           FROM waste_mgmt.areas a
+           JOIN waste_mgmt.zones z ON z.zone_id=a.zone_id
+           WHERE a.fest_id=1 AND a.is_active=TRUE AND z.is_active=TRUE
+           ORDER BY z.name, a.name`
+        ),
+        database.query(
+          `SELECT category_id AS "categoryId", name
+           FROM waste_mgmt.waste_categories
+           WHERE is_active=TRUE ORDER BY name`
+        )
+      ]);
+      res.status(200).json({ data: { areas: areas.rows, categories: categories.rows } });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.get("/api/v1/health", (_req, res) => {
     res.status(200).json({ data: { status: "ok" } });
   });
@@ -47,7 +60,7 @@ export function createApp(database: Database) {
   });
 
   app.post("/api/v1/public/reports", publicReportLimiter, async (req, res, next) => {
-    const parsed = reportSchema.safeParse(req.body);
+    const parsed = publicWasteReportSchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({
         error: { code: "VALIDATION_ERROR", message: "The report contains invalid fields.", details: parsed.error.flatten() }
