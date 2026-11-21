@@ -829,6 +829,17 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
             return;
           }
         }
+        if (body.data.reportId) {
+          const activeLink = await client.query(
+            "SELECT task_id FROM waste_mgmt.report_task_links WHERE report_id=$1 AND link_type='primary' AND ended_at IS NULL",
+            [body.data.reportId]
+          );
+          if (activeLink.rowCount) {
+            await client.query("ROLLBACK");
+            res.status(409).json({ error: { code: "REPORT_ALREADY_ASSIGNED", message: "This report already has an active primary collection task." } });
+            return;
+          }
+        }
         if (body.data.assignedUserId) {
           const user = await client.query("SELECT user_id FROM waste_mgmt.users WHERE user_id=$1 AND status='active'",[body.data.assignedUserId]);
           if (user.rowCount !== 1) {
@@ -890,7 +901,7 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
           }
         }
         await client.query("COMMIT");
-        res.status(201).json({ data: task });
+        res.status(201).json({ data: { ...task, status: body.data.assignedUserId || body.data.assignedTeamId ? "assigned" : "open" } });
       } catch (error) {
         await client.query("ROLLBACK").catch(() => undefined);
         throw error;
