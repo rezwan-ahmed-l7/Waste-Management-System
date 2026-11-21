@@ -579,6 +579,8 @@ CREATE TRIGGER trg_audit_destinations AFTER INSERT OR UPDATE OR DELETE ON materi
 CREATE TRIGGER trg_audit_collection_records AFTER INSERT OR UPDATE OR DELETE ON collection_records FOR EACH ROW EXECUTE FUNCTION audit_row_change('collection_record_id');
 CREATE TRIGGER trg_audit_report_notes AFTER INSERT OR UPDATE OR DELETE ON report_notes FOR EACH ROW EXECUTE FUNCTION audit_row_change('note_id');
 CREATE TRIGGER trg_audit_report_attachments AFTER INSERT OR UPDATE OR DELETE ON report_attachments FOR EACH ROW EXECUTE FUNCTION audit_row_change('attachment_id');
+CREATE TRIGGER trg_audit_fest AFTER INSERT OR UPDATE OR DELETE ON fest FOR EACH ROW EXECUTE FUNCTION audit_row_change('fest_id');
+CREATE TRIGGER trg_audit_cleaning_rounds AFTER INSERT OR UPDATE OR DELETE ON cleaning_rounds FOR EACH ROW EXECUTE FUNCTION audit_row_change('round_id');
 
 
 -- Collection records are editable only while their parent submission is pending.
