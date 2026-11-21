@@ -58,7 +58,7 @@ Anonymous tracking tokens are high entropy; store only hashes and never log raw 
 | team_memberships | id, team_id, user_id, role_in_team, starts_at, ends_at | Historical membership |
 | volunteer_availability | id, user_id, starts_at, ends_at, availability_status, note | Availability |
 | cleaning_rounds | id, event_id, area_id, title, instructions, planned_start_at, planned_end_at, recurrence_rule?, status, created_by | Planned cleaning |
-| collection_tasks | id, event_id, cleaning_round_id?, area_id, title, instructions, priority, status, due_at, created_by, timestamps | Actionable work |
+| collection_tasks | id, event_id, cleaning_round_id?, area_id, title, instructions, priority, status, due_at, created_by, verified_by?, verified_at?, closure_reason?, timestamps | Actionable work and explicit verification/no-waste closure |
 | task_assignments | id, task_id, user_id?, team_id?, assigned_by, assigned_at, unassigned_at, note | Assignment history |
 | task_status_history | id, task_id, from_status, to_status, changed_by, reason, created_at | Transition history |
 
@@ -112,6 +112,7 @@ Constraints:
 - Foreign keys for all required references.
 - Positive weights; non-negative bin capacity; allowlisted units.
 - Event end after start; cleaning-round end after start.
+- Task VERIFIED state requires verifier and timestamp; if there are no accepted collection records, require a non-empty authorized no-waste/false-alarm closure reason.
 - Assignment row has exactly one target.
 - Duplicate report references a different canonical report.
 - Verified submission has verifier and verification timestamp.
