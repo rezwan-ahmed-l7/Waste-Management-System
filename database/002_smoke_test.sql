@@ -24,9 +24,20 @@ BEGIN
   VALUES ('Schema Test Volunteer','schema-volunteer@example.invalid','test-hash-only')
   RETURNING user_id INTO v_worker;
 
+  PERFORM set_config('app.actor_user_id',v_admin::text,true);
+  PERFORM set_config('app.request_id','schema-smoke-request',true);
+
   INSERT INTO zones(fest_id,code,name)
   VALUES (1,'SMOKE_ZONE','Smoke Test Zone')
   RETURNING zone_id INTO v_zone;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM audit_logs
+    WHERE actor_user_id=v_admin AND request_id='schema-smoke-request'
+      AND entity_type='zones' AND entity_id=v_zone::text
+  ) THEN
+    RAISE EXCEPTION 'Audit trigger did not capture actor and request context';
+  END IF;
 
   INSERT INTO areas(fest_id,zone_id,code,name)
   VALUES (1,v_zone,'SMOKE_AREA','Smoke Test Area')
