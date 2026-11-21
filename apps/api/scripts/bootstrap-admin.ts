@@ -1,3 +1,4 @@
+import "dotenv/config";
 import { Client } from "pg";
 import argon2 from "argon2";
 
