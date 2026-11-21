@@ -10,11 +10,9 @@ type AuthenticatedUser = {
   roles: string[];
 };
 
-declare global {
-  namespace Express {
-    interface Request {
-      auth?: AuthenticatedUser;
-    }
+declare module "express-serve-static-core" {
+  interface Request {
+    auth?: AuthenticatedUser;
   }
 }
 
