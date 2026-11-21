@@ -252,6 +252,49 @@ function LocationManager({locations,categories,onDone}:{locations:LocationData;c
   </section>;
 }
 
+
+type AdminUser = { userId:string; fullName:string; email:string; status:string; roles:string[] };
+type Role = { roleId:number; roleKey:string; displayName:string };
+
+function UserAdmin({users,roles,onDone}:{users:AdminUser[];roles:Role[];onDone:()=>void}){
+  const [fullName,setFullName]=useState(""); const [email,setEmail]=useState(""); const [password,setPassword]=useState("");
+  const [roleIds,setRoleIds]=useState<number[]>([]);
+  const [error,setError]=useState(""); const [saving,setSaving]=useState(false);
+  async function createUser(event:FormEvent<HTMLFormElement>){
+    event.preventDefault();setSaving(true);setError("");
+    try{
+      await apiRequest("/users",{method:"POST",body:JSON.stringify({fullName,email,password,roleIds})});
+      setFullName("");setEmail("");setPassword("");setRoleIds([]);onDone();
+    }catch(cause){setError(cause instanceof Error?cause.message:"User creation failed.");}
+    finally{setSaving(false);}
+  }
+  async function changeStatus(user:AdminUser){
+    const status=user.status==="active"?"suspended":"active";
+    if(!window.confirm((status==="suspended"?"Suspend ":"Reactivate ")+user.fullName+"?"))return;
+    setSaving(true);setError("");
+    try{await apiRequest("/users/"+user.userId+"/status",{method:"PATCH",body:JSON.stringify({status})});onDone();}
+    catch(cause){setError(cause instanceof Error?cause.message:"Account update failed.");}
+    finally{setSaving(false);}
+  }
+  return <section className="workspaceSection">
+    <div className="sectionHeading"><div><div className="eyebrow">Access control</div><h2>User accounts</h2></div><span className="countPill">{users.length}</span></div>
+    <form className="formCard userCreateForm" onSubmit={createUser}>
+      <h3>Create staff account</h3>
+      <input required minLength={2} maxLength={120} value={fullName} onChange={e=>setFullName(e.target.value)} placeholder="Full name"/>
+      <input type="email" required maxLength={254} value={email} onChange={e=>setEmail(e.target.value)} placeholder="Email address"/>
+      <input type="password" required minLength={14} maxLength={128} value={password} onChange={e=>setPassword(e.target.value)} placeholder="Temporary password (14+ characters)"/>
+      <strong>Assign roles</strong>
+      <div className="roleCheckboxes">{roles.map(role=><label key={role.roleId}><input type="checkbox" checked={roleIds.includes(role.roleId)} onChange={e=>setRoleIds(current=>e.target.checked?[...current,role.roleId]:current.filter(id=>id!==role.roleId))}/>{role.displayName}</label>)}</div>
+      {error?<p className="error">{error}</p>:null}
+      <button className="primaryButton" disabled={saving || roleIds.length===0}>{saving?"Creating…":"Create account"}</button>
+    </form>
+    {users.map(user=><article className="workCard userRow" key={user.userId}>
+      <div><strong>{user.fullName}</strong><p className="muted">{user.email}</p><div className="roleList">{user.roles.map(role=><span className="rolePill" key={role}>{role.replaceAll("_"," ")}</span>)}</div></div>
+      <div className="userActions"><span className={"statusPill status-"+user.status}>{user.status}</span><button className="secondaryButton" disabled={saving} onClick={()=>void changeStatus(user)}>{user.status==="active"?"Suspend":"Reactivate"}</button></div>
+    </article>)}
+  </section>;
+}
+
 export default function DashboardPage() {
   const router = useRouter();
   const [user,setUser] = useState<CurrentUser | null>(null);
@@ -263,7 +306,7 @@ export default function DashboardPage() {
   const [notifications,setNotifications] = useState<Notification[]>([]);
   const [announcements,setAnnouncements] = useState<Announcement[]>([]);
   const [analytics,setAnalytics] = useState<Analytics | null>(null);
-  const [locations,setLocations] = useState<LocationData>({zones:[],areas:[],bins:[]});
+  const [locations,setLocations] = useState<LocationData>({zones:[],areas:[],bins:[]});\n  const [adminUsers,setAdminUsers] = useState<AdminUser[]>([]);\n  const [roles,setRoles] = useState<Role[]>([]);
   const [error,setError] = useState("");
   const [loading,setLoading] = useState(true);
   const [workingId,setWorkingId] = useState("");
@@ -276,7 +319,7 @@ export default function DashboardPage() {
     const canWork = current.roles.some(role=>["administrator","waste_manager","team_lead","volunteer"].includes(role));
     const canManage = current.roles.some(role=>["administrator","waste_manager"].includes(role));
     const canSeeAnalytics = current.roles.some(role=>["administrator","waste_manager","fest_organizer"].includes(role));
-    const [reportPayload,taskPayload,optionsPayload,userPayload,teamPayload,notificationPayload,announcementPayload,analyticsPayload,locationPayload] = await Promise.all([
+    const [reportPayload,taskPayload,optionsPayload,userPayload,teamPayload,notificationPayload,announcementPayload,analyticsPayload,locationPayload,adminUserPayload,rolePayload] = await Promise.all([
       isManager ? apiRequest("/reports?pageSize=30") : Promise.resolve([]),
       canWork ? apiRequest("/tasks?pageSize=30") : Promise.resolve([]),
       canWork ? apiRequest("/public/form-options") : Promise.resolve({categories:[]}),
@@ -294,7 +337,7 @@ export default function DashboardPage() {
     setNotifications(notificationPayload ?? []);
     setAnnouncements(announcementPayload ?? []);
     setAnalytics(analyticsPayload ?? null);
-    setLocations(locationPayload ?? {zones:[],areas:[],bins:[]});
+    setLocations(locationPayload ?? {zones:[],areas:[],bins:[]});\n    setAdminUsers(adminUserPayload ?? []);\n    setRoles(rolePayload ?? []);
   },[]);
 
   useEffect(() => {
@@ -366,7 +409,7 @@ export default function DashboardPage() {
         {error ? <p className="error" role="alert">{error}</p> : null}
 
 
-        {canManageTasks ? <LocationManager locations={locations} categories={categories} onDone={()=>void loadData()} /> : null}
+        {user.roles.includes("administrator") ? <UserAdmin users={adminUsers} roles={roles} onDone={()=>void loadData()} /> : null}\n        {canManageTasks ? <LocationManager locations={locations} categories={categories} onDone={()=>void loadData()} /> : null}
 
         {analytics ? <section className="workspaceSection">
           <div className="sectionHeading"><div><div className="eyebrow">Live database metrics</div><h2>Fest overview</h2></div></div>
