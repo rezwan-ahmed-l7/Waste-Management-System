@@ -9,6 +9,7 @@ import type { Pool } from "pg";
 import { env } from "./config.js";
 import argon2 from "argon2";
 import { authenticate, readSessionToken, requirePermission } from "./auth.js";
+import { privateUpload, storePrivateUpload, readPrivateUpload, removePrivateUpload, UnsupportedUploadError } from "./storage.js";
 
 type Database = Pick<Pool, "query" | "connect">;
 
@@ -1936,7 +1937,7 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
     }
   });
 
-  app.post("/api/v1/public/reports", publicReportLimiter, async (req, res, next) => {
+  app.post("/api/v1/public/reports", publicReportLimiter, privateUpload.array("attachments", 5), async (req, res, next) => {
     const parsed = publicWasteReportSchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({
@@ -1945,6 +1946,8 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
       return;
     }
 
+    const uploadedFiles = Array.isArray(req.files) ? req.files : [];
+    const savedStorageKeys: string[] = [];
     const client = await database.connect();
     try {
       const token = randomBytes(32).toString("base64url");
@@ -2006,6 +2009,17 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
         "INSERT INTO waste_mgmt.report_tracking_tokens (report_id, token_hash, expires_at) VALUES ($1,$2,now()+interval '180 days')",
         [report.report_id, tokenHash]
       );
+      for (const file of uploadedFiles) {
+        const stored = await storePrivateUpload(file);
+        savedStorageKeys.push(stored.storageKey);
+        await client.query(
+          "INSERT INTO waste_mgmt.report_attachments(report_id,storage_key,original_file_name,media_type,file_size_bytes) " +
+          "VALUES ($1,$2,$3,$4,$5)",
+          [report.report_id,stored.storageKey,stored.originalFileName,stored.mediaType,stored.fileSizeBytes]
+        );
+      }
+
+
       await client.query(
         "INSERT INTO waste_mgmt.report_status_history (report_id, from_status, to_status, is_public) VALUES ($1,NULL,'submitted',TRUE)",
         [report.report_id]
@@ -2022,6 +2036,7 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
       });
     } catch (error) {
       await client.query("ROLLBACK").catch(() => undefined);
+      await Promise.all(savedStorageKeys.map(removePrivateUpload));
       next(error);
     } finally {
       client.release();
