@@ -1085,6 +1085,155 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
     }
   });
 
+
+  app.get("/api/v1/notifications", authenticate(database), async (req, res, next) => {
+    const auth = req.auth;
+    if (!auth) {
+      res.status(401).json({ error: { code: "UNAUTHENTICATED", message: "Sign in to continue." } });
+      return;
+    }
+    try {
+      const result = await database.query(
+        "SELECT notification_id AS \"notificationId\",type,title,body,resource_type AS \"resourceType\", " +
+        "resource_id AS \"resourceId\",read_at AS \"readAt\",created_at AS \"createdAt\" " +
+        "FROM waste_mgmt.notifications WHERE user_id=$1 ORDER BY created_at DESC LIMIT 50",
+        [auth.userId]
+      );
+      res.status(200).json({ data: result.rows });
+    } catch (error) { next(error); }
+  });
+
+  app.post("/api/v1/notifications/:notificationId/read", authenticate(database), async (req, res, next) => {
+    const id = z.string().uuid().safeParse(req.params.notificationId);
+    const auth = req.auth;
+    if (!id.success || !auth) {
+      res.status(404).json({ error: { code: "NOTIFICATION_NOT_FOUND", message: "Notification not found." } });
+      return;
+    }
+    try {
+      const result = await database.query(
+        "UPDATE waste_mgmt.notifications SET read_at=COALESCE(read_at,now()) " +
+        "WHERE notification_id=$1 AND user_id=$2 RETURNING notification_id AS \"notificationId\",read_at AS \"readAt\"",
+        [id.data,auth.userId]
+      );
+      if (!result.rows[0]) {
+        res.status(404).json({ error: { code: "NOTIFICATION_NOT_FOUND", message: "Notification not found." } });
+        return;
+      }
+      res.status(200).json({ data: result.rows[0] });
+    } catch (error) { next(error); }
+  });
+
+  app.post("/api/v1/notifications/read-all", authenticate(database), async (req, res, next) => {
+    const auth = req.auth;
+    if (!auth) {
+      res.status(401).json({ error: { code: "UNAUTHENTICATED", message: "Sign in to continue." } });
+      return;
+    }
+    try {
+      const result = await database.query(
+        "UPDATE waste_mgmt.notifications SET read_at=now() WHERE user_id=$1 AND read_at IS NULL",
+        [auth.userId]
+      );
+      res.status(200).json({ data: { markedRead: result.rowCount ?? 0 } });
+    } catch (error) { next(error); }
+  });
+
+  app.get("/api/v1/announcements", authenticate(database), async (req, res, next) => {
+    const auth = req.auth;
+    if (!auth) {
+      res.status(401).json({ error: { code: "UNAUTHENTICATED", message: "Sign in to continue." } });
+      return;
+    }
+    try {
+      const result = await database.query(
+        "SELECT DISTINCT an.announcement_id AS \"announcementId\",an.title,an.body,an.audience, " +
+        "an.published_at AS \"publishedAt\",an.expires_at AS \"expiresAt\" " +
+        "FROM waste_mgmt.announcements an " +
+        "WHERE an.published_at IS NOT NULL AND an.published_at<=now() AND (an.expires_at IS NULL OR an.expires_at>now()) " +
+        "AND (an.audience='all_users' " +
+        "OR (an.audience='role' AND EXISTS (SELECT 1 FROM waste_mgmt.user_roles ur WHERE ur.user_id=$1 AND ur.role_id=an.target_role_id)) " +
+        "OR (an.audience='zone' AND EXISTS (" +
+        "SELECT 1 FROM waste_mgmt.task_assignments ta JOIN waste_mgmt.collection_tasks t ON t.task_id=ta.task_id " +
+        "JOIN waste_mgmt.areas a ON a.area_id=t.area_id " +
+        "LEFT JOIN waste_mgmt.team_memberships tm ON tm.team_id=ta.team_id AND tm.user_id=$1 AND tm.ends_at IS NULL AND tm.starts_at<=now() " +
+        "WHERE a.zone_id=an.target_zone_id AND ta.unassigned_at IS NULL AND (ta.user_id=$1 OR tm.user_id=$1)))) " +
+        "ORDER BY an.published_at DESC LIMIT 50",
+        [auth.userId]
+      );
+      res.status(200).json({ data: result.rows });
+    } catch (error) { next(error); }
+  });
+
+  app.post("/api/v1/announcements", authenticate(database), requirePermission(database, "announcements.manage"), async (req, res, next) => {
+    const body = z.object({
+      title: z.string().trim().min(3).max(160),
+      body: z.string().trim().min(3).max(5000),
+      audience: z.enum(["all_users","role","zone"]).default("all_users"),
+      targetRoleId: z.coerce.number().int().positive().optional(),
+      targetZoneId: z.string().uuid().optional(),
+      expiresAt: z.string().datetime().optional()
+    }).strict().safeParse(req.body);
+    const auth = req.auth;
+    if (!body.success || !auth) {
+      res.status(400).json({ error: { code: "VALIDATION_ERROR", message: "Invalid announcement details." } });
+      return;
+    }
+    if ((body.data.audience==="role" && !body.data.targetRoleId) ||
+        (body.data.audience==="zone" && !body.data.targetZoneId) ||
+        (body.data.audience==="all_users" && (body.data.targetRoleId || body.data.targetZoneId)) ||
+        (body.data.audience==="role" && body.data.targetZoneId) ||
+        (body.data.audience==="zone" && body.data.targetRoleId)) {
+      res.status(422).json({ error: { code: "INVALID_AUDIENCE", message: "Choose exactly one matching audience target." } });
+      return;
+    }
+    try {
+      const client = await database.connect();
+      try {
+        await client.query("BEGIN");
+        let audienceValid = true;
+        if (body.data.targetRoleId) {
+          const role = await client.query("SELECT role_id FROM waste_mgmt.roles WHERE role_id=$1",[body.data.targetRoleId]);
+          audienceValid = role.rowCount===1;
+        }
+        if (body.data.targetZoneId) {
+          const zone = await client.query("SELECT zone_id FROM waste_mgmt.zones WHERE zone_id=$1 AND is_active=TRUE",[body.data.targetZoneId]);
+          audienceValid = zone.rowCount===1;
+        }
+        if (!audienceValid) {
+          await client.query("ROLLBACK");
+          res.status(422).json({ error: { code: "INVALID_AUDIENCE_TARGET", message: "The selected role or zone is not valid." } });
+          return;
+        }
+        const inserted = await client.query(
+          "INSERT INTO waste_mgmt.announcements(title,body,audience,target_role_id,target_zone_id,published_by,published_at,expires_at) " +
+          "VALUES ($1,$2,$3,$4,$5,$6,now(),$7) RETURNING announcement_id AS \"announcementId\",title,audience,published_at AS \"publishedAt\"",
+          [body.data.title,body.data.body,body.data.audience,body.data.targetRoleId ?? null,body.data.targetZoneId ?? null,auth.userId,body.data.expiresAt ?? null]
+        );
+        const announcement = inserted.rows[0];
+        if (!announcement) throw new Error("Announcement could not be published.");
+        await client.query(
+          "INSERT INTO waste_mgmt.notifications(user_id,type,title,body,resource_type,resource_id) " +
+          "SELECT DISTINCT u.user_id,'announcement',$1,$2,'announcement',$3 FROM waste_mgmt.users u " +
+          "WHERE u.status='active' AND (" +
+          "$4='all_users' " +
+          "OR ($4='role' AND EXISTS (SELECT 1 FROM waste_mgmt.user_roles ur WHERE ur.user_id=u.user_id AND ur.role_id=$5)) " +
+          "OR ($4='zone' AND EXISTS (SELECT 1 FROM waste_mgmt.task_assignments ta " +
+          "JOIN waste_mgmt.collection_tasks t ON t.task_id=ta.task_id JOIN waste_mgmt.areas a ON a.area_id=t.area_id " +
+          "LEFT JOIN waste_mgmt.team_memberships tm ON tm.team_id=ta.team_id AND tm.user_id=u.user_id AND tm.ends_at IS NULL AND tm.starts_at<=now() " +
+          "WHERE a.zone_id=$6 AND ta.unassigned_at IS NULL AND (ta.user_id=u.user_id OR tm.user_id=u.user_id)))" +
+          ")",
+          [body.data.title,body.data.body,announcement.announcementId,body.data.audience,body.data.targetRoleId ?? null,body.data.targetZoneId ?? null]
+        );
+        await client.query("COMMIT");
+        res.status(201).json({ data: announcement });
+      } catch (error) {
+        await client.query("ROLLBACK").catch(() => undefined);
+        throw error;
+      } finally { client.release(); }
+    } catch (error) { next(error); }
+  });
+
   app.get("/api/v1/public/form-options", async (_req, res, next) => {
     try {
       const [areas, categories] = await Promise.all([
