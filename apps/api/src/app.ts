@@ -2,7 +2,7 @@ import express, { type ErrorRequestHandler } from "express";
 import cors from "cors";
 import helmet from "helmet";
 import { rateLimit } from "express-rate-limit";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { publicWasteReportSchema } from "@waste/contracts";
 import type { Pool } from "pg";
@@ -15,6 +15,12 @@ type Database = Pick<Pool, "query" | "connect">;
 export function createApp(database: Database, verifyPassword: (hash: string, password: string) => Promise<boolean> = argon2.verify) {
   const app = express();
   app.disable("x-powered-by");
+  app.use((_req, res, next) => {
+    const requestId = randomUUID();
+    res.setHeader("x-request-id", requestId);
+    res.locals.requestId = requestId;
+    next();
+  });
   app.use(helmet());
   app.use(cors({ origin: env.WEB_ORIGIN, credentials: true }));
   app.use(express.json({ limit: "64kb" }));
@@ -261,6 +267,11 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
       res.status(400).json({ error: { code: "VALIDATION_ERROR", message: "Invalid report review request." } });
       return;
     }
+
+    if (body.data.action !== "duplicate" && body.data.canonicalReportId) {
+      res.status(422).json({ error: { code: "UNEXPECTED_CANONICAL_REPORT", message: "Only duplicate decisions can reference a canonical report." } });
+      return;
+    }
     if ((body.data.action === "reject" || body.data.action === "duplicate") && !body.data.reason) {
       res.status(422).json({ error: { code: "REASON_REQUIRED", message: "A reason is required for this review action." } });
       return;
@@ -480,9 +491,16 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
   app.use(notFound);
 
   const errors: ErrorRequestHandler = (error, _req, res, _next) => {
-    console.error("API request failed", error instanceof Error ? error.message : "Unknown error");
     if (res.headersSent) return;
-    res.status(500).json({ error: { code: "INTERNAL_ERROR", message: "An unexpected error occurred." } });
+    const status = typeof error === "object" && error !== null && "status" in error
+      ? Number((error as { status?: unknown }).status)
+      : 500;
+    if (status === 400) {
+      res.status(400).json({ error: { code: "INVALID_JSON", message: "Request body contains invalid JSON." } });
+      return;
+    }
+    console.error("API request failed", { requestId: res.locals.requestId });
+    res.status(500).json({ error: { code: "INTERNAL_ERROR", message: "An unexpected error occurred.", requestId: res.locals.requestId } });
   };
   app.use(errors);
 
