@@ -2,16 +2,20 @@
 
 ## 1. Delivery approach
 
-Build small vertical slices and keep each branch coherent. Do not generate the whole application in one unreviewed batch. Do not mark a feature complete because its screen exists.
+Build small vertical slices and keep implementation coherent. The project owner explicitly requires all work to remain on the single branch `docs/project-blueprint` until the entire project is complete. Do not create feature branches. Do not modify or merge into `main`; final integration requires explicit owner approval after all verification gates pass.
 
-Work on feature branches from the agreed development baseline. Never commit directly to main. Use pull requests for integration and do not merge without the repository owner's explicit approval.
+All commits stay on `docs/project-blueprint`. Never create feature branches, commit to `main`, merge, or rebase into `main`. Do not merge until the entire project is complete, all tests pass, and the owner explicitly approves.
 
 ## 2. Phases and exit gates
 
 ### Phase 0 — Documentation and decisions
-Deliver: five-document baseline, consistency review, confirmed event details, reporting policy, verification authority, waste taxonomy, language, privacy/retention, storage/hosting decisions.
+Deliver: five-document baseline and consistency review.
 
-Exit: documents agree on roles, status transitions, entity names, metrics, and API concepts; critical business rules are not contradictory. Record safe assumptions explicitly rather than inventing facts.
+Confirmed: one BAUST CSE Fest only; anonymous reporting is supported; database identifiers use English snake_case; all work remains on `docs/project-blueprint` until final owner approval.
+
+Still requiring organizer confirmation before production: fest dates/map, final waste taxonomy, verification authority, privacy/retention policy, hosting and storage provider.
+
+Exit: documents agree on roles, status transitions, entity names, metrics, and API concepts; critical business rules are not contradictory.
 
 ### Phase 1 — Engineering foundation
 Deliver: Node 24.x TypeScript workspace, web/API scaffold, strict config, lint/format/typecheck scripts, PostgreSQL/Prisma connection, migrations, env validation, request IDs, safe errors/logging, health/readiness endpoints, CI.
@@ -96,7 +100,6 @@ If a check fails: capture the error, identify root cause, fix the underlying iss
 
 - main: stable baseline; no direct commits.
 - docs/project-blueprint: initial documentation-only work.
-- feature branches: one coherent feature or vertical slice.
 - Use concise conventional commit prefixes: docs:, feat:, fix:, test:, refactor:, chore:.
 - Prefer logical commits; avoid one commit per trivial edit and avoid giant opaque commits.
 - PR description includes scope, design notes, test commands/results, UI screenshots when relevant, and migration notes.
@@ -113,8 +116,9 @@ A feature is done only when requirements and permissions are documented; UI/API/
 - [x] Create isolated documentation branch.
 - [x] Add five-document baseline (README plus four docs).
 - [x] Cross-document consistency and internal documentation links verified.
-- [ ] Confirm stakeholder decisions required before implementation.
-- [ ] Pass Phase 0 exit gate.
+- [x] Confirm single-fest scope, anonymous reporting, and English database identifiers.
+- [x] Confirm single-branch delivery policy.
+- [ ] Confirm remaining operational details before production.
 
 ### Later phases
 Not started. Do not mark a phase complete until its exit-gate evidence exists.
