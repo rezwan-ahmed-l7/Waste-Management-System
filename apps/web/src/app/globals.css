@@ -175,3 +175,24 @@ h1 { max-width: 720px; margin: 14px 0 18px; font-size: clamp(38px, 6vw, 64px); l
 .roleEditor { display:flex; flex-wrap:wrap; align-items:center; gap:10px 14px; padding:12px 0; }
 .roleEditor label { display:flex; align-items:center; gap:6px; }
 .roleEditor .error { flex-basis:100%; }
+
+
+@media print {
+  @page { margin: 16mm; }
+  body * { visibility: hidden !important; }
+  .finalReport, .finalReport * { visibility: visible !important; }
+  .finalReport {
+    position: absolute !important;
+    inset: 0 auto auto 0 !important;
+    width: 100% !important;
+    max-width: none !important;
+    border: 0 !important;
+    box-shadow: none !important;
+    background: #fff !important;
+    color: #111 !important;
+  }
+  .finalReport button { display: none !important; }
+  .finalReport .muted { color: #444 !important; }
+  .finalReport h2, .finalReport h3 { break-after: avoid; }
+  .finalReport article, .finalReport .metricCard { break-inside: avoid; }
+}
