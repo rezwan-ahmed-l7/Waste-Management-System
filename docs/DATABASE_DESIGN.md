@@ -46,9 +46,9 @@ Enforce scoped uniqueness for event/zone/area/bin codes. A bin may optionally ha
 | report_photos | id, report_id, uploaded_by?, storage_key, mime_type, byte_size, checksum, created_at | Private evidence metadata |
 | report_status_history | id, report_id, from_status, to_status, changed_by?, reason, visibility, created_at | Transition history |
 | report_notes | id, report_id, author_id, body, visibility, created_at | Internal/public note |
-| report_task_links | report_id, task_id, linked_by, linked_at | Many-to-many linkage |
+| report_task_links | report_id, task_id, link_type, linked_by, linked_at, ended_at? | Many-to-many linkage and active primary-task lifecycle |
 
-Anonymous tracking tokens are high entropy; store only hashes and never log raw tokens. Duplicate reports point to a canonical report and cannot independently create collection work.
+Anonymous tracking tokens are high entropy; store only hashes and never log raw tokens. Duplicate reports point to a canonical report and cannot independently create collection work. A report may have at most one active PRIMARY task link; enforce this with a partial unique index on report_id where link_type='PRIMARY' and ended_at IS NULL. Close the link when its task is cancelled or no longer responsible; retain historical links.
 
 ## 5. Workforce and tasks
 
@@ -115,8 +115,9 @@ Constraints:
 - Assignment row has exactly one target.
 - Duplicate report references a different canonical report.
 - Verified submission has verifier and verification timestamp.
+- Recycling/disposal allocation references exactly one source (material batch or segregation output), enforced by a CHECK constraint.
 - No cross-event task/report links.
-- Use partial unique indexes for active assignments/memberships where appropriate.
+- Use partial unique indexes for active assignments/memberships and active primary report-task links.
 
 Indexes:
 - users(normalized_email) unique; sessions(user_id, expires_at), session_hash unique.
