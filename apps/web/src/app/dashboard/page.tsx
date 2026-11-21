@@ -408,6 +408,52 @@ function RoundManager({rounds,areas,onDone}:{rounds:CleaningRound[];areas:Locati
   </section>;
 }
 
+
+type FestConfig = {name:string;description:string|null;timezone:string;startsAt:string|null;endsAt:string|null;status:string};
+type AuditLog = {auditLogId:number;entityType:string;entityId:string;action:string;actorUserId:string|null;createdAt:string;safeMetadata:Record<string,unknown>;requestId:string|null};
+
+function FestSettings({fest,onDone}:{fest:FestConfig;onDone:()=>void}){
+  const [name,setName]=useState(fest.name);const [description,setDescription]=useState(fest.description??"");
+  const [timezone,setTimezone]=useState(fest.timezone);const [startsAt,setStartsAt]=useState(fest.startsAt?new Date(fest.startsAt).toISOString().slice(0,16):"");
+  const [endsAt,setEndsAt]=useState(fest.endsAt?new Date(fest.endsAt).toISOString().slice(0,16):"");const [status,setStatus]=useState(fest.status);
+  const [error,setError]=useState("");const [saving,setSaving]=useState(false);
+  async function submit(event:FormEvent<HTMLFormElement>){
+    event.preventDefault();setSaving(true);setError("");
+    try{
+      await apiRequest("/fest",{method:"PATCH",body:JSON.stringify({
+        name,description:description||null,timezone,
+        startsAt:startsAt?new Date(startsAt).toISOString():null,
+        endsAt:endsAt?new Date(endsAt).toISOString():null,status
+      })});
+      onDone();
+    }catch(cause){setError(cause instanceof Error?cause.message:"Fest settings update failed.");}
+    finally{setSaving(false);}
+  }
+  return <section className="workspaceSection">
+    <div className="sectionHeading"><div><div className="eyebrow">Event configuration</div><h2>Fest settings</h2></div></div>
+    <form className="formCard festSettingsForm" onSubmit={submit}>
+      <label>Fest name<input required minLength={2} maxLength={160} value={name} onChange={e=>setName(e.target.value)}/></label>
+      <label>Description<textarea rows={3} maxLength={3000} value={description} onChange={e=>setDescription(e.target.value)}/></label>
+      <label>Time zone<input required value={timezone} onChange={e=>setTimezone(e.target.value)} placeholder="Asia/Dhaka"/></label>
+      <label>Start<input type="datetime-local" value={startsAt} onChange={e=>setStartsAt(e.target.value)}/></label>
+      <label>End<input type="datetime-local" value={endsAt} onChange={e=>setEndsAt(e.target.value)}/></label>
+      <label>Status<select value={status} onChange={e=>setStatus(e.target.value)}><option value="planned">Planned</option><option value="active">Active</option><option value="completed">Completed</option><option value="cancelled">Cancelled</option></select></label>
+      {error?<p className="error">{error}</p>:null}
+      <button className="primaryButton" disabled={saving}>{saving?"Saving…":"Save fest settings"}</button>
+    </form>
+  </section>;
+}
+
+function AuditLogViewer({logs}:{logs:AuditLog[]}){
+  return <section className="workspaceSection">
+    <div className="sectionHeading"><div><div className="eyebrow">Accountability</div><h2>Audit log</h2></div><span className="countPill">{logs.length}</span></div>
+    {logs.length===0?<p className="emptyState">No audit events recorded yet.</p>:logs.map(log=><article className="auditRow" key={log.auditLogId}>
+      <div><strong>{log.action} · {log.entityType}</strong><p className="muted">{log.entityId}</p><small className="muted">{new Date(log.createdAt).toLocaleString()}</small></div>
+      <div className="auditMeta"><span>{log.actorUserId??"System"}</span><code>{JSON.stringify(log.safeMetadata)}</code>{log.requestId?<small>Request {log.requestId}</small>:null}</div>
+    </article>)}
+  </section>;
+}
+
 export default function DashboardPage() {
   const router = useRouter();
   const [user,setUser] = useState<CurrentUser | null>(null);
@@ -423,7 +469,7 @@ export default function DashboardPage() {
   const [adminUsers,setAdminUsers] = useState<AdminUser[]>([]);
   const [roles,setRoles] = useState<Role[]>([]);
   const [materials,setMaterials] = useState<MaterialOverview>({batches:[],segregations:[],destinations:[],allocations:[]});
-  const [rounds,setRounds] = useState<CleaningRound[]>([]);
+  const [rounds,setRounds] = useState<CleaningRound[]>([]);\n  const [fest,setFest] = useState<FestConfig|null>(null);\n  const [auditLogs,setAuditLogs] = useState<AuditLog[]>([]);
   const [error,setError] = useState("");
   const [loading,setLoading] = useState(true);
   const [workingId,setWorkingId] = useState("");
@@ -436,7 +482,7 @@ export default function DashboardPage() {
     const canWork = current.roles.some(role=>["administrator","waste_manager","team_lead","volunteer"].includes(role));
     const canManage = current.roles.some(role=>["administrator","waste_manager"].includes(role));
     const canSeeAnalytics = current.roles.some(role=>["administrator","waste_manager","fest_organizer"].includes(role));
-    const [reportPayload,taskPayload,optionsPayload,userPayload,teamPayload,notificationPayload,announcementPayload,analyticsPayload,locationPayload,adminUserPayload,rolePayload,materialPayload,roundPayload] = await Promise.all([
+    const [reportPayload,taskPayload,optionsPayload,userPayload,teamPayload,notificationPayload,announcementPayload,analyticsPayload,locationPayload,adminUserPayload,rolePayload,materialPayload,roundPayload,festPayload,auditPayload] = await Promise.all([
       isManager ? apiRequest("/reports?pageSize=30") : Promise.resolve([]),
       canWork ? apiRequest("/tasks?pageSize=30") : Promise.resolve([]),
       canWork ? apiRequest("/public/form-options") : Promise.resolve({categories:[]}),
@@ -463,7 +509,7 @@ export default function DashboardPage() {
     setAdminUsers(adminUserPayload ?? []);
     setRoles(rolePayload ?? []);
     setMaterials(materialPayload ?? {batches:[],segregations:[],destinations:[],allocations:[]});
-    setRounds(roundPayload ?? []);
+    setRounds(roundPayload ?? []);\n    setFest(festPayload ?? null);\n    setAuditLogs(auditPayload ?? []);
   },[]);
 
   useEffect(() => {
@@ -535,7 +581,7 @@ export default function DashboardPage() {
         {error ? <p className="error" role="alert">{error}</p> : null}
 
 
-        {user.roles.includes("administrator") ? <UserAdmin users={adminUsers} roles={roles} onDone={()=>void loadData()} /> : null}
+        {user.roles.includes("administrator") ? <UserAdmin users={adminUsers} roles={roles} onDone={()=>void loadData()} /> : null}\n        {fest ? <FestSettings fest={fest} onDone={()=>void loadData()} /> : null}\n        {user.roles.includes("administrator") ? <AuditLogViewer logs={auditLogs} /> : null}
         {canManageTasks ? <RoundManager rounds={rounds} areas={locations.areas} onDone={()=>void loadData()} /> : null}
         {canManageTasks ? <MaterialManager data={materials} categories={categories} onDone={()=>void loadData()} /> : null}
         {canManageTasks ? <LocationManager locations={locations} categories={categories} onDone={()=>void loadData()} /> : null}
