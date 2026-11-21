@@ -62,6 +62,28 @@ psql -U postgres -d waste_management -f database/003_reporting_queries.sql
 
 The suite demonstrates relational joins, left joins, aggregation, filtered aggregates, CTEs, window functions, lateral joins, workload reporting, overdue-task derivation, material reconciliation and audit summaries.
 
+## Backup and restore runbook
+
+Use a dedicated PostgreSQL role with the minimum required privileges. Store backups outside the repository on encrypted storage with access controls; never place credentials in command history or commit them.
+
+PowerShell example (run from the repository root; replace the destination with a protected backup directory):
+
+```powershell
+$env:PGPASSWORD = Read-Host "Database password" -AsSecureString | ConvertFrom-SecureString
+# Prefer pgpass/service-file authentication for unattended jobs.
+pg_dump -h localhost -U postgres -d waste_management -Fc -f "D:\Backups\waste_management.dump"
+pg_restore --list "D:\Backups\waste_management.dump"
+```
+
+Restore into a new, empty verification database first. Do not restore over the live database as a routine test:
+
+```powershell
+createdb -h localhost -U postgres waste_management_restore_check
+pg_restore -h localhost -U postgres -d waste_management_restore_check --clean --if-exists "D:\Backups\waste_management.dump"
+```
+
+After restore, run `npm run db:verify`, execute `database/002_smoke_test.sql`, and compare expected row counts and application behavior before accepting the backup. Back up the private evidence directory (or private object-storage bucket) consistently with the database; a database dump alone does not contain uploaded files. Define retention, encryption, off-site copies, RPO/RTO and restore ownership with the event operator. This runbook is documented but a production backup/restore drill has not yet been executed.
+
 ## Private evidence storage
 
 Report attachments and collection evidence are stored outside the web application's public directory. Local development uses `PRIVATE_STORAGE_DIR` (default: `apps/api/storage/private`). Files are size-limited, MIME-checked and inspected by file signature; generated storage keys are used instead of client-supplied paths. Downloads require the appropriate manager permission. Do not expose this directory through a static file server or commit its contents.
