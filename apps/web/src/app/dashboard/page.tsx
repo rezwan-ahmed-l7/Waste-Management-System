@@ -454,6 +454,51 @@ function AuditLogViewer({logs}:{logs:AuditLog[]}){
   </section>;
 }
 
+
+type ReportAttachment = {attachmentId:string;fileName:string;mediaType:string;fileSizeBytes:number};
+type CollectionPhoto = {photoId:string;mediaType:string;byteSize:number};
+
+function downloadPrivateFile(path:string,fileName:string){
+  return fetch(API+path,{credentials:"include"}).then(async response=>{
+    if(!response.ok)throw new Error("Evidence download failed.");
+    const blob=await response.blob();
+    const url=URL.createObjectURL(blob);
+    const anchor=document.createElement("a");
+    anchor.href=url;anchor.download=fileName;anchor.click();
+    URL.revokeObjectURL(url);
+  });
+}
+
+function ReportEvidence({reportId}:{reportId:string}){
+  const [files,setFiles]=useState<ReportAttachment[]>([]);
+  const [error,setError]=useState("");
+  useEffect(()=>{let active=true;apiRequest("/reports/"+reportId+"/attachments").then(data=>{if(active)setFiles(data);}).catch(cause=>{if(active)setError(cause instanceof Error?cause.message:"Evidence list unavailable.");});return()=>{active=false;};},[reportId]);
+  return <div className="evidenceList"><strong>Report evidence</strong>{error?<small className="error">{error}</small>:null}{files.length===0?<small className="muted">No attachments uploaded.</small>:files.map(file=><button className="linkButton" key={file.attachmentId} onClick={()=>void downloadPrivateFile("/reports/"+reportId+"/attachments/"+file.attachmentId,file.fileName)}>{file.fileName} · {(file.fileSizeBytes/1024).toFixed(0)} KB</button>)}</div>;
+}
+
+function TaskEvidence({submissionId}:{submissionId:string}){
+  const [files,setFiles]=useState<CollectionPhoto[]>([]);
+  const [error,setError]=useState("");
+  useEffect(()=>{let active=true;apiRequest("/collection-submissions/"+submissionId+"/photos").then(data=>{if(active)setFiles(data);}).catch(cause=>{if(active)setError(cause instanceof Error?cause.message:"Collection evidence unavailable.");});return()=>{active=false;};},[submissionId]);
+  return <div className="evidenceList"><strong>Collection evidence</strong>{error?<small className="error">{error}</small>:null}{files.length===0?<small className="muted">No evidence attached.</small>:files.map(file=><button className="linkButton" key={file.photoId} onClick={()=>void downloadPrivateFile("/collection-submissions/"+submissionId+"/photos/"+file.photoId,"collection-evidence-"+file.photoId)}>{file.mediaType} · {(file.byteSize/1024).toFixed(0)} KB</button>)}</div>;
+}
+
+function ReportNoteForm({reportId,onDone}:{reportId:string;onDone:()=>void}){
+  const [body,setBody]=useState("");const [visibility,setVisibility]=useState("public");const [error,setError]=useState("");const [saving,setSaving]=useState(false);
+  async function submit(event:FormEvent<HTMLFormElement>){
+    event.preventDefault();setSaving(true);setError("");
+    try{await apiRequest("/reports/"+reportId+"/notes",{method:"POST",body:JSON.stringify({body,visibility})});setBody("");onDone();}
+    catch(cause){setError(cause instanceof Error?cause.message:"Report note could not be saved.");}
+    finally{setSaving(false);}
+  }
+  return <form className="reportNoteForm" onSubmit={submit}>
+    <textarea required minLength={2} maxLength={2000} value={body} onChange={e=>setBody(e.target.value)} placeholder="Add an update or internal note"/>
+    <select value={visibility} onChange={e=>setVisibility(e.target.value)}><option value="public">Visible to reporter</option><option value="internal">Internal only</option></select>
+    <button className="secondaryButton" disabled={saving||body.trim().length<2}>{saving?"Saving…":"Add note"}</button>
+    {error?<small className="error">{error}</small>:null}
+  </form>;
+}
+
 export default function DashboardPage() {
   const router = useRouter();
   const [user,setUser] = useState<CurrentUser | null>(null);
@@ -640,6 +685,7 @@ export default function DashboardPage() {
                 <p className="muted">{report.zoneName} · {report.areaName} · {report.priority} priority</p>
                 <p>{report.description}</p>
                 <small className="muted">Report {report.reportId}</small>
+                {canReviewReports ? <><ReportEvidence reportId={report.reportId}/><ReportNoteForm reportId={report.reportId} onDone={()=>void loadData()}/></> : null}
                 <div className="buttonRow">
                   {canReviewReports && report.status==="submitted" ? <button className="secondaryButton" disabled={workingId===report.reportId} onClick={()=>perform(report.reportId,()=>apiRequest("/reports/"+report.reportId+"/start-review",{method:"POST"}))}>Start review</button> : null}
                   {canReviewReports && report.status==="under_review" ? <>
@@ -661,6 +707,7 @@ export default function DashboardPage() {
                 <div className="workCardTop"><strong>{task.title}</strong><span className={"statusPill status-"+task.status}>{task.status.replaceAll("_"," ")}</span></div>
                 <p className="muted">{task.zoneName} · {task.areaName} · {task.priority} priority</p>
                 <small className="muted">Task {task.taskId}</small>
+                {canManageTasks && task.latestSubmissionId ? <TaskEvidence submissionId={task.latestSubmissionId}/> : null}
                 <div className="buttonRow">
                   {canExecuteTasks && task.status==="assigned" ? <button className="primaryButton" disabled={workingId===task.taskId} onClick={()=>perform(task.taskId,()=>apiRequest("/tasks/"+task.taskId+"/start",{method:"POST"}))}>Start task</button> : null}
                   {canExecuteTasks && task.status==="in_progress" ? <EvidenceForm taskId={task.taskId} categories={categories} onDone={()=>void loadData()}/> : null}
