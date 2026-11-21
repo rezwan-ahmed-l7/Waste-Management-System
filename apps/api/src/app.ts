@@ -413,6 +413,101 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
   });
 
 
+
+  app.post("/api/v1/collection-submissions/:submissionId/decision", authenticate(database), requirePermission(database, "collections.verify"), async (req, res, next) => {
+    const id = z.string().uuid().safeParse(req.params.submissionId);
+    const body = z.object({
+      decision: z.enum(["verify","reject"]),
+      reason: z.string().trim().max(1000).optional()
+    }).strict().safeParse(req.body);
+    const auth = req.auth;
+    if (!id.success || !body.success || !auth) {
+      res.status(400).json({ error: { code: "VALIDATION_ERROR", message: "Invalid collection decision." } });
+      return;
+    }
+    if (body.data.decision === "reject" && !body.data.reason) {
+      res.status(422).json({ error: { code: "REASON_REQUIRED", message: "A reason is required when rejecting collection evidence." } });
+      return;
+    }
+    try {
+      const client = await database.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query("SELECT set_config('app.actor_user_id',$1,true)",[auth.userId]);
+        const found = await client.query(
+          "SELECT submission_id,task_id,submitted_by,status FROM waste_mgmt.collection_submissions WHERE submission_id=$1 FOR UPDATE",
+          [id.data]
+        );
+        const submission = found.rows[0];
+        if (!submission) {
+          await client.query("ROLLBACK");
+          res.status(404).json({ error: { code: "SUBMISSION_NOT_FOUND", message: "Collection submission not found." } });
+          return;
+        }
+        if (submission.status !== "submitted") {
+          await client.query("ROLLBACK");
+          res.status(409).json({ error: { code: "SUBMISSION_ALREADY_DECIDED", message: "This collection submission has already been reviewed." } });
+          return;
+        }
+        const task = await client.query(
+          "SELECT task_id,status FROM waste_mgmt.collection_tasks WHERE task_id=$1 FOR UPDATE",
+          [submission.task_id]
+        );
+        if (task.rows[0]?.status !== "submitted_for_verification") {
+          await client.query("ROLLBACK");
+          res.status(409).json({ error: { code: "INVALID_TASK_STATE", message: "The task is not waiting for verification." } });
+          return;
+        }
+        const nextStatus = body.data.decision === "verify" ? "verified" : "rejected";
+        await client.query(
+          "UPDATE waste_mgmt.collection_submissions SET status=$1,verified_by=$2,verified_at=now(),verification_note=$3 WHERE submission_id=$4",
+          [nextStatus,auth.userId,body.data.reason ?? null,id.data]
+        );
+        if (nextStatus === "verified") {
+          await client.query(
+            "UPDATE waste_mgmt.collection_tasks SET status='verified',verified_by=$1,verified_at=now(),completed_at=now() WHERE task_id=$2",
+            [auth.userId,submission.task_id]
+          );
+          await client.query(
+            "UPDATE waste_mgmt.waste_reports r SET status='resolved' " +
+            "FROM waste_mgmt.report_task_links rtl " +
+            "WHERE rtl.task_id=$1 AND rtl.report_id=r.report_id AND rtl.link_type='primary' " +
+            "AND rtl.ended_at IS NULL AND r.status='in_progress'",
+            [submission.task_id]
+          );
+          await client.query(
+            "UPDATE waste_mgmt.report_task_links SET ended_at=now() WHERE task_id=$1 AND link_type='primary' AND ended_at IS NULL",
+            [submission.task_id]
+          );
+        } else {
+          await client.query(
+            "UPDATE waste_mgmt.collection_tasks SET status='in_progress' WHERE task_id=$1",
+            [submission.task_id]
+          );
+        }
+        await client.query(
+          "INSERT INTO waste_mgmt.notifications(user_id,type,title,body,resource_type,resource_id) " +
+          "VALUES ($1,'task_update',$2,$3,'task',$4)",
+          [
+            submission.submitted_by,
+            nextStatus === "verified" ? "Collection verified" : "Collection needs correction",
+            nextStatus === "verified" ? "Your submitted collection evidence was verified." : (body.data.reason ?? "Please review the manager feedback and submit corrected evidence."),
+            submission.task_id
+          ]
+        );
+        await client.query("COMMIT");
+        res.status(200).json({ data: { submissionId: id.data, taskId: submission.task_id, status: nextStatus } });
+      } catch (error) {
+        await client.query("ROLLBACK").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.post("/api/v1/tasks/:taskId/start", authenticate(database), requirePermission(database, "tasks.execute"), async (req, res, next) => {
     const id = z.string().uuid().safeParse(req.params.taskId);
     const auth = req.auth;
