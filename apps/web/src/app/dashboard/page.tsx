@@ -189,6 +189,55 @@ type Analytics = {
   reportsByZone: { zoneName: string; reportCount: number }[];
 };
 
+function FinalFestReport(){
+  const [from,setFrom]=useState("");
+  const [to,setTo]=useState("");
+  const [report,setReport]=useState<{
+    festName:string;timezone:string;period:{from:string;to:string};
+    reportCounts:{status:string;count:number}[];
+    taskCounts:{status:string;count:number}[];
+    verifiedCollections:{categoryName:string;verifiedWeightKg:string|number;verifiedRecords:number}[];
+    destinationTotals:{destinationType:string;allocatedWeightKg:string|number}[];
+    currentAwaitingProcessingKg:string|number;
+    metricDefinitions:Record<string,string>;
+  }|null>(null);
+  const [error,setError]=useState("");
+  const [loading,setLoading]=useState(false);
+  async function generate(event:FormEvent<HTMLFormElement>){
+    event.preventDefault();setLoading(true);setError("");setReport(null);
+    try{
+      const data=await apiRequest("/analytics/final-report?from="+encodeURIComponent(from)+"&to="+encodeURIComponent(to));
+      setReport(data);
+    }catch(cause){setError(cause instanceof Error?cause.message:"Final report could not be generated.");}
+    finally{setLoading(false);}
+  }
+  return <section className="workspaceSection">
+    <div className="sectionHeading"><div><div className="eyebrow">Event closeout</div><h2>Final fest report</h2></div></div>
+    <form className="formCard" onSubmit={generate}>
+      <p className="muted">Choose the local fest date range. The report includes verified collection only and explains each metric.</p>
+      <label>From date<input type="date" required value={from} onChange={e=>setFrom(e.target.value)}/></label>
+      <label>To date<input type="date" required min={from||undefined} value={to} onChange={e=>setTo(e.target.value)}/></label>
+      {error?<p className="error" role="alert">{error}</p>:null}
+      <button className="primaryButton" disabled={loading||!from||!to||to<from}>{loading?"Generating…":"Generate final report"}</button>
+    </form>
+    {report?<article className="panel finalReport" aria-live="polite">
+      <div className="sectionHeading"><div><div className="eyebrow">Verified database report</div><h2>{report.festName}</h2><p className="muted">{report.period.from} – {report.period.to} · {report.timezone}</p></div><button className="secondaryButton" onClick={()=>window.print()}>Print / Save PDF</button></div>
+      <div className="analyticsColumns">
+        <div><h3>Reports by current status</h3>{report.reportCounts.map(x=><p className="metricLine" key={x.status}><span>{x.status.replaceAll("_"," ")}</span><strong>{x.count}</strong></p>)}{report.reportCounts.length===0?<p className="muted">No reports in this period.</p>:null}</div>
+        <div><h3>Tasks by current status</h3>{report.taskCounts.map(x=><p className="metricLine" key={x.status}><span>{x.status.replaceAll("_"," ")}</span><strong>{x.count}</strong></p>)}{report.taskCounts.length===0?<p className="muted">No tasks in this period.</p>:null}</div>
+      </div>
+      <h3>Verified collection by category</h3>
+      {report.verifiedCollections.map(x=><p className="metricLine" key={x.categoryName}><span>{x.categoryName} · {x.verifiedRecords} records</span><strong>{Number(x.verifiedWeightKg).toFixed(3)} kg</strong></p>)}
+      <h3>Material delivered to destinations</h3>
+      {report.destinationTotals.map(x=><p className="metricLine" key={x.destinationType}><span>{x.destinationType}</span><strong>{Number(x.allocatedWeightKg).toFixed(3)} kg</strong></p>)}
+      <div className="metricCard"><span>Current awaiting processing snapshot</span><strong>{Number(report.currentAwaitingProcessingKg).toFixed(3)} kg</strong></div>
+      <h3>Metric definitions and limitations</h3>
+      {Object.entries(report.metricDefinitions).map(([key,value])=><p className="muted" key={key}><strong>{key.replaceAll(/([A-Z])/g," $1")}: </strong>{value}</p>)}
+      <small className="muted">Generated from current database state. Status counts reflect current status, not the status at the end of the selected period.</small>
+    </article>:null}
+  </section>;
+}
+
 function AnnouncementForm({ onDone }: { onDone: () => void }) {
   const [title,setTitle]=useState("");
   const [body,setBody]=useState("");
@@ -672,6 +721,7 @@ export default function DashboardPage() {
           </div>
           <div className="buttonRow"><button className="secondaryButton" onClick={()=>void downloadCsv("reports")}>Export reports CSV</button><button className="secondaryButton" onClick={()=>void downloadCsv("tasks")}>Export tasks CSV</button><button className="secondaryButton" onClick={()=>void downloadCsv("collections")}>Export verified collections CSV</button></div>
         </section> : null}
+        {analytics ? <FinalFestReport /> : null}
 
         {canManageTasks ? <section className="workspaceSection">
           <div className="sectionHeading"><div><div className="eyebrow">Workforce</div><h2>Teams</h2></div><span className="countPill">{teams.length}</span></div>
