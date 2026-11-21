@@ -258,6 +258,35 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
   });
 
 
+
+  app.post("/api/v1/reports/:reportId/notes", authenticate(database), requirePermission(database, "reports.review"), async (req,res,next)=>{
+    const id=z.string().uuid().safeParse(req.params.reportId);
+    const body=z.object({body:z.string().trim().min(2).max(2000),visibility:z.enum(["public","internal"]).default("internal")}).strict().safeParse(req.body);
+    const auth=req.auth;
+    if(!id.success||!body.success||!auth){res.status(400).json({error:{code:"VALIDATION_ERROR",message:"Invalid report note."}});return;}
+    try{
+      const client=await database.connect();
+      try{
+        await client.query("BEGIN");
+        await client.query("SELECT set_config('app.actor_user_id',$1,true)",[auth.userId]);
+        const report=await client.query("SELECT report_id FROM waste_mgmt.waste_reports WHERE report_id=$1 AND fest_id=1 FOR SHARE",[id.data]);
+        if(report.rowCount!==1){
+          await client.query("ROLLBACK");
+          res.status(404).json({error:{code:"REPORT_NOT_FOUND",message:"Report not found."}});
+          return;
+        }
+        const inserted=await client.query(
+          "INSERT INTO waste_mgmt.report_notes(report_id,author_user_id,body,visibility) VALUES ($1,$2,$3,$4) " +
+          "RETURNING note_id AS \"noteId\",body,visibility,created_at AS \"createdAt\"",
+          [id.data,auth.userId,body.data.body,body.data.visibility]
+        );
+        await client.query("COMMIT");
+        res.status(201).json({data:inserted.rows[0]});
+      }catch(error){await client.query("ROLLBACK").catch(()=>undefined);throw error;}
+      finally{client.release();}
+    }catch(error){next(error);}
+  });
+
   app.post("/api/v1/reports/:reportId/start-review", authenticate(database), requirePermission(database, "reports.review"), async (req, res, next) => {
     const id = z.string().uuid().safeParse(req.params.reportId);
     const auth = req.auth;
