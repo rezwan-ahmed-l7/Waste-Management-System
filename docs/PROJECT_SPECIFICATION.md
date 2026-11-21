@@ -11,7 +11,7 @@ A report is not proof of collection. A task is not complete until evidence is su
 ### First release
 - One configured fest with dates, operating status, and timezone.
 - Accounts, secure sessions, profiles, roles, and permissions.
-- Waste issue reporting by attendees/staff; anonymous reporting can be enabled by configuration.
+- Waste issue reporting by attendees/staff; anonymous reporting is supported and does not require a registered account.
 - Zone/area hierarchy, waste categories, and bin inventory.
 - Report review, prioritization, duplicate linking, and status history.
 - Scheduled cleaning rounds as well as report-driven tasks.
@@ -100,11 +100,16 @@ Manage accounts, roles, categories, zones/areas/bins, event configuration, annou
 - Privacy: collect minimum reporter data; retention and anonymous reporting policy require organizer approval.
 - Localization: prepare for Bangla/English; confirm initial interface language before UI build.
 
-## 7. Decisions to confirm before production
+## 7. Confirmed stakeholder decisions
+- Scope: one BAUST CSE Fest only.
+- Reporting: anonymous reporting is supported.
+- Database identifiers: English naming convention.
+
+## 8. Decisions to confirm before production
 
 Fest dates/hours and map; anonymous reporting and abuse controls; who verifies collections and disposal; available scales and measurement process; actual waste categories and real disposal/recycling partners; interface language/branding; privacy and retention policy; hosting/database/object-storage provider. Do not invent partners or operational facts.
 
-## 8. First-release acceptance
+## 9. First-release acceptance
 
 - Reporter can submit and track a report without accessing other users' private data.
 - Manager can review and link reports to tasks; Manager can also schedule cleaning without a report.
