@@ -51,6 +51,8 @@ jobs:
         run: psql -v ON_ERROR_STOP=1 "$DATABASE_URL" -f database/001_schema.sql
       - name: Provision least-privilege runtime database role
         env:
+          PGHOST: localhost
+          PGPASSWORD: postgres
           POSTGRES_USER: postgres
           POSTGRES_DB: waste_management
           APP_DB_PASSWORD: ci_app_password
