@@ -1942,6 +1942,87 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
     } catch (error) { next(error); }
   });
 
+  app.get("/api/v1/analytics/final-report", authenticate(database), requirePermission(database, "analytics.read"), async (req, res, next) => {
+    const filters = z.object({
+      from: z.string().regex(/^\\d{4}-\\d{2}-\\d{2}$/),
+      to: z.string().regex(/^\\d{4}-\\d{2}-\\d{2}$/)
+    }).strict().safeParse(req.query);
+    if (!filters.success) {
+      res.status(400).json({ error: { code: "INVALID_REPORT_WINDOW", message: "Provide from and to dates in YYYY-MM-DD format." } });
+      return;
+    }
+    const from = new Date(filters.data.from + "T00:00:00Z");
+    const to = new Date(filters.data.to + "T00:00:00Z");
+    if (!Number.isFinite(from.getTime()) || !Number.isFinite(to.getTime()) ||
+        from.toISOString().slice(0, 10) !== filters.data.from ||
+        to.toISOString().slice(0, 10) !== filters.data.to || to < from) {
+      res.status(422).json({ error: { code: "INVALID_REPORT_WINDOW", message: "The report end date must be on or after a valid start date." } });
+      return;
+    }
+    try {
+      const window = "((($1::date)::timestamp AT TIME ZONE f.timezone) AND (($2::date + 1)::timestamp AT TIME ZONE f.timezone))";
+      const [fest, reports, tasks, collections, destinations, outstanding] = await Promise.all([
+        database.query("SELECT name,timezone FROM waste_mgmt.fest f WHERE fest_id=1"),
+        database.query(
+          "SELECT r.status,COUNT(*)::int AS count FROM waste_mgmt.waste_reports r CROSS JOIN waste_mgmt.fest f " +
+          "WHERE r.fest_id=1 AND r.submitted_at >= ($1::date::timestamp AT TIME ZONE f.timezone) " +
+          "AND r.submitted_at < (($2::date + 1)::timestamp AT TIME ZONE f.timezone) GROUP BY r.status ORDER BY r.status",
+          [filters.data.from, filters.data.to]
+        ),
+        database.query(
+          "SELECT t.status,COUNT(*)::int AS count FROM waste_mgmt.collection_tasks t CROSS JOIN waste_mgmt.fest f " +
+          "WHERE t.fest_id=1 AND t.created_at >= ($1::date::timestamp AT TIME ZONE f.timezone) " +
+          "AND t.created_at < (($2::date + 1)::timestamp AT TIME ZONE f.timezone) GROUP BY t.status ORDER BY t.status",
+          [filters.data.from, filters.data.to]
+        ),
+        database.query(
+          "SELECT wc.name AS \"categoryName\",COALESCE(SUM(cr.weight_kg),0) AS \"verifiedWeightKg\",COUNT(cr.collection_record_id)::int AS \"verifiedRecords\" " +
+          "FROM waste_mgmt.waste_categories wc LEFT JOIN waste_mgmt.collection_records cr ON cr.category_id=wc.category_id " +
+          "LEFT JOIN waste_mgmt.collection_submissions cs ON cs.submission_id=cr.submission_id AND cs.status='verified' " +
+          "CROSS JOIN waste_mgmt.fest f WHERE cr.measured_at IS NULL OR " +
+          "(cr.measured_at >= ($1::date::timestamp AT TIME ZONE f.timezone) AND cr.measured_at < (($2::date + 1)::timestamp AT TIME ZONE f.timezone) AND cs.submission_id IS NOT NULL) " +
+          "GROUP BY wc.category_id,wc.name ORDER BY wc.name",
+          [filters.data.from, filters.data.to]
+        ),
+        database.query(
+          "SELECT md.destination_type AS \"destinationType\",COALESCE(SUM(ma.weight_kg),0) AS \"allocatedWeightKg\" " +
+          "FROM waste_mgmt.material_destinations md LEFT JOIN waste_mgmt.material_allocations ma ON ma.destination_id=md.destination_id " +
+          "AND ma.allocated_at >= ($1::date::timestamp AT TIME ZONE (SELECT timezone FROM waste_mgmt.fest WHERE fest_id=1)) " +
+          "AND ma.allocated_at < (($2::date + 1)::timestamp AT TIME ZONE (SELECT timezone FROM waste_mgmt.fest WHERE fest_id=1)) " +
+          "GROUP BY md.destination_type ORDER BY md.destination_type",
+          [filters.data.from, filters.data.to]
+        ),
+        database.query(
+          "SELECT COALESCE((SELECT SUM(remaining_weight_kg) FROM waste_mgmt.v_material_balance),0) + " +
+          "COALESCE((SELECT SUM(remaining_weight_kg) FROM waste_mgmt.v_segregation_balance),0) AS \"currentAwaitingProcessingKg\""
+        )
+      ]);
+      if (!fest.rows[0]) {
+        res.status(404).json({ error: { code: "FEST_NOT_FOUND", message: "Fest configuration not found." } });
+        return;
+      }
+      res.status(200).json({
+        data: {
+          festName: fest.rows[0].name,
+          timezone: fest.rows[0].timezone,
+          period: { from: filters.data.from, to: filters.data.to },
+          reportCounts: reports.rows,
+          taskCounts: tasks.rows,
+          verifiedCollections: collections.rows,
+          destinationTotals: destinations.rows,
+          currentAwaitingProcessingKg: outstanding.rows[0]?.currentAwaitingProcessingKg ?? 0,
+          metricDefinitions: {
+            reports: "Reports submitted during the selected local fest dates, grouped by current status.",
+            tasks: "Tasks created during the selected local fest dates, grouped by current status.",
+            verifiedCollections: "Collection weights measured during the selected local fest dates and belonging to verified submissions only.",
+            destinationTotals: "Material allocated to destinations during the selected local fest dates.",
+            currentAwaitingProcessingKg: "Current live remaining material snapshot at report generation time; it is not historical or restricted to the selected date range."
+          }
+        }
+      });
+    } catch (error) { next(error); }
+  });
+
   app.get("/api/v1/analytics/export.csv", authenticate(database), requirePermission(database, "analytics.read"), async (req, res, next) => {
     const query = z.object({ type: z.enum(["reports","tasks","collections"]) }).safeParse(req.query);
     if (!query.success) {
