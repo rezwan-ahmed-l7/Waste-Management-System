@@ -7,6 +7,7 @@ const envSchema = z.object({
   API_PORT: z.coerce.number().int().min(1).max(65535).default(4000),
   DATABASE_URL: z.string().url().optional(),
   WEB_ORIGIN: z.string().url().default("http://localhost:3000"),
+  PRIVATE_STORAGE_DIR: z.string().min(1).default("./storage/private"),
   PUBLIC_REPORT_RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(900_000),
   PUBLIC_REPORT_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(8)
 });
