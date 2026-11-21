@@ -1402,13 +1402,14 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
     if(!auth){res.status(401).json({error:{code:"UNAUTHENTICATED",message:"Sign in to continue."}});return;}
     try{
       const scope=taskScope(auth.userId,auth.roles,1);
+      const scopedRoundTasks=scope.sql==="TRUE" ? "TRUE" : "EXISTS (SELECT 1 FROM waste_mgmt.collection_tasks st WHERE st.round_id=cr.round_id AND "+scope.sql.replaceAll("t.task_id","st.task_id")+")";
       const result=await database.query(
         "SELECT cr.round_id AS \"roundId\",cr.title,cr.instructions,cr.status,cr.planned_start_at AS \"plannedStartAt\", " +
         "cr.planned_end_at AS \"plannedEndAt\",a.name AS \"areaName\",z.name AS \"zoneName\",COUNT(DISTINCT t.task_id)::int AS \"taskCount\" " +
         "FROM waste_mgmt.cleaning_rounds cr JOIN waste_mgmt.areas a ON a.area_id=cr.area_id " +
         "JOIN waste_mgmt.zones z ON z.zone_id=a.zone_id LEFT JOIN waste_mgmt.collection_tasks t ON t.round_id=cr.round_id " +
         "WHERE cr.fest_id=1 AND (" +
-        (scope.sql==="TRUE" ? "TRUE" : "EXISTS (SELECT 1 FROM waste_mgmt.collection_tasks st WHERE st.round_id=cr.round_id AND "+scope.sql+")") +
+        scopedRoundTasks +
         ") GROUP BY cr.round_id,a.name,z.name ORDER BY cr.planned_start_at DESC",
         scope.values
       );
