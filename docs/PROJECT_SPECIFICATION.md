@@ -68,7 +68,7 @@ Create teams, appoint team leads, manage time-bounded memberships, assign work, 
 Create in-app notifications for report updates, assignments, reminders, verification decisions, and announcements. Notifications are recipient-scoped and have read/unread state. External email/SMS/WhatsApp is deferred; core operations must work without external provider credentials.
 
 ### FR-09 Dashboard and analytics
-Show reports by status/category/priority/area; open and overdue tasks; verification backlog; workload; verified collected weight; recycled/disposed/awaiting quantities; and area hotspots. Provide authorization-safe CSV export. A date-scoped, printable final fest report with documented metric definitions remains a delivery item, not a completed feature.
+Show reports by status/category/priority/area; open and overdue tasks; verification backlog; workload; verified collected weight; recycled/disposed/awaiting quantities; and area hotspots. Provide authorization-safe CSV export. A date-scoped, printable final fest report includes report/task status counts, verified collection by category, destination allocations, current outstanding balance, and metric definitions. Status counts describe current status for records created in the selected period; the outstanding balance is a live snapshot.
 
 ### FR-10 Administration and audit
 Manage accounts, roles, categories, zones/areas/bins, event configuration, announcements, and audit views. Audit actor, action, entity, timestamp, request ID, and safe metadata. Never log passwords, tokens, or unnecessary personal data.
