@@ -15,5 +15,6 @@ ENV NEXT_PUBLIC_API_BASE_URL=${NEXT_PUBLIC_API_BASE_URL}
 RUN npm run build
 
 ENV NODE_ENV=production
+USER node
 EXPOSE 3000 4000
 CMD ["npm","run","start","--workspace","@waste/web"]
