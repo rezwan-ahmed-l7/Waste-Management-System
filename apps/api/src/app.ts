@@ -385,7 +385,7 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
           return;
         }
         const inserted=await client.query(
-          "INSERT INTO waste_mgmt.report_notes(report_id,author_user_id,body,visibility) VALUES ($1,$2,$3,$4) " +
+          "INSERT INTO waste_mgmt.report_notes(report_id,author_id,body,visibility) VALUES ($1,$2,$3,$4) " +
           "RETURNING note_id AS \"noteId\",body,visibility,created_at AS \"createdAt\"",
           [id.data,auth.userId,body.data.body,body.data.visibility]
         );
