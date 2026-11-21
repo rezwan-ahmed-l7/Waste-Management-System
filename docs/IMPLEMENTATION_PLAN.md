@@ -36,7 +36,7 @@ Exit: lifecycle tests pass; upload security and private evidence access tested; 
 ### Phase 5 — Workforce and collection
 Deliver: teams, memberships, availability, cleaning rounds, tasks, assignments, progress, evidence submissions, manager verification/rejection.
 
-Exit: team/resource authorization passes; assignment/status history retained; no verification without accepted evidence or explicit authorized no-waste closure; rejected submissions can be corrected without losing history.
+Exit: team/resource authorization passes; assignment/status history retained; no verification without accepted evidence or explicit authorized no-waste closure; rejected submissions can be corrected without losing history; cancelled tasks are not reopened, replacement work is created and linked.
 
 ### Phase 6 — Material flow
 Deliver: weight records, segregation, recycling, disposal, material balances, transaction-safe allocation.
