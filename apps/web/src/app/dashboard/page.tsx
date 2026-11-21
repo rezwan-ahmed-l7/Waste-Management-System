@@ -262,7 +262,8 @@ export default function DashboardPage() {
   const [teams,setTeams] = useState<Team[]>([]);
   const [notifications,setNotifications] = useState<Notification[]>([]);
   const [announcements,setAnnouncements] = useState<Announcement[]>([]);
-  const [analytics,setAnalytics] = useState<Analytics | null>(null);\n  const [locations,setLocations] = useState<LocationData>({zones:[],areas:[],bins:[]});
+  const [analytics,setAnalytics] = useState<Analytics | null>(null);
+  const [locations,setLocations] = useState<LocationData>({zones:[],areas:[],bins:[]});
   const [error,setError] = useState("");
   const [loading,setLoading] = useState(true);
   const [workingId,setWorkingId] = useState("");
@@ -292,7 +293,8 @@ export default function DashboardPage() {
     setTeams(teamPayload ?? []);
     setNotifications(notificationPayload ?? []);
     setAnnouncements(announcementPayload ?? []);
-    setAnalytics(analyticsPayload ?? null);\n    setLocations(locationPayload ?? {zones:[],areas:[],bins:[]});
+    setAnalytics(analyticsPayload ?? null);
+    setLocations(locationPayload ?? {zones:[],areas:[],bins:[]});
   },[]);
 
   useEffect(() => {
@@ -364,7 +366,9 @@ export default function DashboardPage() {
         {error ? <p className="error" role="alert">{error}</p> : null}
 
 
-        {canManageTasks ? <LocationManager locations={locations} categories={categories} onDone={()=>void loadData()} /> : null}\n\n        {analytics ? <section className="workspaceSection">
+        {canManageTasks ? <LocationManager locations={locations} categories={categories} onDone={()=>void loadData()} /> : null}
+
+        {analytics ? <section className="workspaceSection">
           <div className="sectionHeading"><div><div className="eyebrow">Live database metrics</div><h2>Fest overview</h2></div></div>
           <div className="metricGrid">
             <article className="metricCard"><span>Reports</span><strong>{analytics.reportCounts.reduce((sum,item)=>sum+Number(item.count),0)}</strong></article>
