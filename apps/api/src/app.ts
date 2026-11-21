@@ -6,14 +6,14 @@ import { rateLimit } from "express-rate-limit";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { publicWasteReportSchema } from "@waste/contracts";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { env } from "./config.js";
 import argon2 from "argon2";
 import { authenticate, readSessionToken, requirePermission } from "./auth.js";
 import { privateUpload, storePrivateUpload, readPrivateUpload, removePrivateUpload, UnsupportedUploadError } from "./storage.js";
 
 type Database = Pick<Pool, "query" | "connect">;
-type DatabaseClient = Awaited<ReturnType<Database["connect"]>>;
+type DatabaseClient = PoolClient;
 
 async function auditedMutation<T>(
   database: Database,
