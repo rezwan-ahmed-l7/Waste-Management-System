@@ -524,9 +524,32 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
     const body=z.object({status:z.enum(["active","suspended","disabled"])}).strict().safeParse(req.body);
     if(!id.success||!body.success){res.status(400).json({error:{code:"VALIDATION_ERROR",message:"Invalid account status update."}});return;}
     try{
+      const auth=req.auth;
       const client=await database.connect();
       try{
         await client.query("BEGIN");
+        if(body.data.status!=="active"){
+          const isAdmin=await client.query(
+            "SELECT EXISTS(SELECT 1 FROM waste_mgmt.user_roles ur JOIN waste_mgmt.roles r ON r.role_id=ur.role_id WHERE ur.user_id=$1 AND r.role_key='administrator') AS is_admin",
+            [id.data]
+          );
+          if(isAdmin.rows[0]?.is_admin){
+            const count=await client.query(
+              "SELECT COUNT(*)::int AS total FROM waste_mgmt.user_roles ur JOIN waste_mgmt.roles r ON r.role_id=ur.role_id JOIN waste_mgmt.users u ON u.user_id=ur.user_id WHERE r.role_key='administrator' AND u.status='active'"
+            );
+            if(Number(count.rows[0]?.total??0)<=1){
+              await client.query("ROLLBACK");
+              res.status(409).json({error:{code:"LAST_ADMIN_PROTECTED",message:"The last active Administrator account cannot be suspended or disabled."}});
+              return;
+            }
+          }
+          if(auth?.userId===id.data && isAdmin.rows[0]?.is_admin){
+            await client.query("ROLLBACK");
+            res.status(409).json({error:{code:"SELF_LOCKOUT_PREVENTED",message:"You cannot suspend or disable your own Administrator account."}});
+            return;
+          }
+        }
+        if(auth)await client.query("SELECT set_config('app.actor_user_id',$1,true)",[auth.userId]);
         const updated=await client.query(
           "UPDATE waste_mgmt.users SET status=$1 WHERE user_id=$2 RETURNING user_id AS \"userId\",status",
           [body.data.status,id.data]
