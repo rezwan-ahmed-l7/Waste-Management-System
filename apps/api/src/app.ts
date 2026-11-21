@@ -398,12 +398,13 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
       page: z.coerce.number().int().min(1).default(1),
       pageSize: z.coerce.number().int().min(1).max(100).default(20)
     }).safeParse(req.query);
-    if (!filters.success || !req.auth) {
+    const auth = req.auth;
+    if (!filters.success || !auth) {
       res.status(400).json({ error: { code: "VALIDATION_ERROR", message: "Invalid task filters." } });
       return;
     }
     try {
-      const scope = taskScope(req.auth.userId, req.auth.roles);
+      const scope = taskScope(auth.userId, auth.roles);
       const conditions = ["t.fest_id=1", scope.sql];
       const values: (string | number)[] = [...scope.values];
       if (filters.data.status) {
@@ -435,12 +436,13 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
 
   app.get("/api/v1/tasks/:taskId", ...taskRead, async (req, res, next) => {
     const id = z.string().uuid().safeParse(req.params.taskId);
-    if (!id.success || !req.auth) {
+    const auth = req.auth;
+    if (!id.success || !auth) {
       res.status(404).json({ error: { code: "TASK_NOT_FOUND", message: "Task not found." } });
       return;
     }
     try {
-      const scope = taskScope(req.auth.userId, req.auth.roles, 2);
+      const scope = taskScope(auth.userId, auth.roles, 2);
       const result = await database.query(
         "SELECT t.task_id AS \"taskId\", t.title, t.instructions, t.priority, t.status, t.due_at AS \"dueAt\", " +
         "t.created_at AS \"createdAt\", t.started_at AS \"startedAt\", t.completed_at AS \"completedAt\", " +
@@ -1270,7 +1272,8 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
       assignedUserId: z.string().uuid().optional(),
       assignedTeamId: z.string().uuid().optional()
     }).strict().safeParse(req.body);
-    if (!body.success || !req.auth) {
+    const auth = req.auth;
+    if (!body.success || !auth) {
       res.status(400).json({ error: { code: "VALIDATION_ERROR", message: "Invalid task details." } });
       return;
     }
@@ -1282,7 +1285,7 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
       const client = await database.connect();
       try {
         await client.query("BEGIN");
-        await client.query("SELECT set_config('app.actor_user_id',$1,true)", [req.auth.userId]);
+        await client.query("SELECT set_config('app.actor_user_id',$1,true)", [auth.userId]);
         const area = await client.query(
           "SELECT area_id FROM waste_mgmt.areas WHERE area_id=$1 AND fest_id=1 AND is_active=TRUE FOR SHARE",
           [body.data.areaId]
@@ -1334,18 +1337,18 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
         const inserted = await client.query(
           "INSERT INTO waste_mgmt.collection_tasks(fest_id,area_id,title,instructions,priority,due_at,created_by) " +
           "VALUES (1,$1,$2,$3,$4,$5,$6) RETURNING task_id AS \"taskId\", status",
-          [body.data.areaId,body.data.title,body.data.instructions ?? null,body.data.priority,body.data.dueAt ?? null,req.auth.userId]
+          [body.data.areaId,body.data.title,body.data.instructions ?? null,body.data.priority,body.data.dueAt ?? null,auth.userId]
         );
         const task = inserted.rows[0];
         if (!task) throw new Error("Task creation returned no row.");
         await client.query(
           "INSERT INTO waste_mgmt.task_status_history(task_id,from_status,to_status,changed_by) VALUES ($1,NULL,'open',$2)",
-          [task.taskId,req.auth.userId]
+          [task.taskId,auth.userId]
         );
         if (body.data.reportId) {
           await client.query(
             "INSERT INTO waste_mgmt.report_task_links(report_id,task_id,link_type,linked_by) VALUES ($1,$2,'primary',$3)",
-            [body.data.reportId,task.taskId,req.auth.userId]
+            [body.data.reportId,task.taskId,auth.userId]
           );
           if (row.status === "accepted") {
             await client.query(
@@ -1357,7 +1360,7 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
         if (body.data.assignedUserId || body.data.assignedTeamId) {
           await client.query(
             "INSERT INTO waste_mgmt.task_assignments(task_id,user_id,team_id,assigned_by) VALUES ($1,$2,$3,$4)",
-            [task.taskId,body.data.assignedUserId ?? null,body.data.assignedTeamId ?? null,req.auth.userId]
+            [task.taskId,body.data.assignedUserId ?? null,body.data.assignedTeamId ?? null,auth.userId]
           );
           await client.query("UPDATE waste_mgmt.collection_tasks SET status='assigned' WHERE task_id=$1",[task.taskId]);
           if (body.data.assignedUserId) {
