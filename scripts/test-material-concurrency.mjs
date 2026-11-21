@@ -7,7 +7,6 @@ if (!connectionString) throw new Error("DATABASE_URL is required for material co
 const pool = new Pool({ connectionString, max: 5 });
 const suffix = randomUUID().replaceAll("-", "").slice(0, 12);
 let ids = {};
-let fixtureCreated = false;
 
 async function query(sql, values = []) {
   return pool.query(sql, values);
@@ -71,7 +70,6 @@ try {
     [`Concurrency Destination ${suffix}`]
   );
   ids.destination = destination.rows[0].destination_id;
-  fixtureCreated = true;
 
   const attempt = async () => {
     const client = await pool.connect();
