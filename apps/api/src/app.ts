@@ -1686,7 +1686,7 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
         database.query("SELECT md.destination_type AS \"destinationType\",SUM(ma.weight_kg) AS \"weightKg\" " +
           "FROM waste_mgmt.material_allocations ma JOIN waste_mgmt.material_destinations md ON md.destination_id=ma.destination_id " +
           "GROUP BY md.destination_type ORDER BY md.destination_type"),
-        database.query("SELECT COALESCE(SUM(remaining_weight_kg),0) AS \"remainingWeightKg\" FROM waste_mgmt.v_material_balance"),
+        database.query("SELECT (SELECT COALESCE(SUM(remaining_weight_kg),0) FROM waste_mgmt.v_material_balance) + " + "(SELECT COALESCE(SUM(remaining_weight_kg),0) FROM waste_mgmt.v_segregation_balance) AS \"remainingWeightKg\""),
         database.query("SELECT z.name AS \"zoneName\",COUNT(r.report_id)::int AS \"reportCount\" " +
           "FROM waste_mgmt.zones z LEFT JOIN waste_mgmt.areas a ON a.zone_id=z.zone_id " +
           "LEFT JOIN waste_mgmt.waste_reports r ON r.area_id=a.area_id " +
