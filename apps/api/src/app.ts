@@ -1960,7 +1960,6 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
       return;
     }
     try {
-      const window = "((($1::date)::timestamp AT TIME ZONE f.timezone) AND (($2::date + 1)::timestamp AT TIME ZONE f.timezone))";
       const [fest, reports, tasks, collections, destinations, outstanding] = await Promise.all([
         database.query("SELECT name,timezone FROM waste_mgmt.fest f WHERE fest_id=1"),
         database.query(
