@@ -1395,6 +1395,127 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
 
 
 
+
+  app.get("/api/v1/materials/overview", authenticate(database), requirePermission(database, "materials.manage"), async (_req,res,next)=>{
+    try{
+      const [batches,segregations,destinations,allocations]=await Promise.all([
+        database.query(
+          "SELECT mb.batch_id AS \"batchId\",mb.available_weight_kg AS \"availableWeightKg\",v.remaining_weight_kg AS \"remainingWeightKg\", " +
+          "wc.name AS \"sourceCategory\",cr.weight_kg AS \"sourceWeightKg\",cs.task_id AS \"taskId\",mb.created_at AS \"createdAt\" " +
+          "FROM waste_mgmt.material_batches mb JOIN waste_mgmt.collection_records cr ON cr.collection_record_id=mb.collection_record_id " +
+          "JOIN waste_mgmt.waste_categories wc ON wc.category_id=cr.category_id " +
+          "JOIN waste_mgmt.collection_submissions cs ON cs.submission_id=cr.submission_id " +
+          "JOIN waste_mgmt.v_material_balance v ON v.batch_id=mb.batch_id ORDER BY mb.created_at DESC"
+        ),
+        database.query(
+          "SELECT sr.segregation_id AS \"segregationId\",sr.source_batch_id AS \"sourceBatchId\",sr.weight_kg AS \"producedWeightKg\", " +
+          "v.remaining_weight_kg AS \"remainingWeightKg\",wc.name AS \"outputCategory\",sr.recorded_at AS \"recordedAt\" " +
+          "FROM waste_mgmt.segregation_records sr JOIN waste_mgmt.waste_categories wc ON wc.category_id=sr.output_category_id " +
+          "JOIN waste_mgmt.v_segregation_balance v ON v.segregation_id=sr.segregation_id ORDER BY sr.recorded_at DESC"
+        ),
+        database.query("SELECT destination_id AS \"destinationId\",destination_type AS \"destinationType\",name,contact_info AS \"contactInfo\" FROM waste_mgmt.material_destinations WHERE is_active=TRUE ORDER BY name"),
+        database.query(
+          "SELECT ma.allocation_id AS \"allocationId\",ma.weight_kg AS \"weightKg\",md.name AS destination,md.destination_type AS \"destinationType\",ma.allocated_at AS \"allocatedAt\" " +
+          "FROM waste_mgmt.material_allocations ma JOIN waste_mgmt.material_destinations md ON md.destination_id=ma.destination_id ORDER BY ma.allocated_at DESC LIMIT 100"
+        )
+      ]);
+      res.status(200).json({data:{batches:batches.rows,segregations:segregations.rows,destinations:destinations.rows,allocations:allocations.rows}});
+    }catch(error){next(error);}
+  });
+
+  app.post("/api/v1/materials/destinations", authenticate(database), requirePermission(database, "materials.manage"), async (req,res,next)=>{
+    const body=z.object({
+      destinationType:z.enum(["recycling","disposal","composting","reuse"]),
+      name:z.string().trim().min(2).max(160),
+      contactInfo:z.string().trim().max(1000).optional()
+    }).strict().safeParse(req.body);
+    const auth=req.auth;
+    if(!body.success||!auth){res.status(400).json({error:{code:"VALIDATION_ERROR",message:"Invalid material destination."}});return;}
+    try{
+      const client=await database.connect();
+      try{
+        await client.query("BEGIN");
+        await client.query("SELECT set_config('app.actor_user_id',$1,true)",[auth.userId]);
+        const result=await client.query(
+          "INSERT INTO waste_mgmt.material_destinations(destination_type,name,contact_info) VALUES ($1,$2,$3) " +
+          "RETURNING destination_id AS \"destinationId\",destination_type AS \"destinationType\",name",
+          [body.data.destinationType,body.data.name,body.data.contactInfo??null]
+        );
+        await client.query("COMMIT");
+        res.status(201).json({data:result.rows[0]});
+      }catch(error){await client.query("ROLLBACK").catch(()=>undefined);throw error;}
+      finally{client.release();}
+    }catch(error){next(error);}
+  });
+
+  app.post("/api/v1/materials/batches/:batchId/segregations", authenticate(database), requirePermission(database, "materials.manage"), async (req,res,next)=>{
+    const batchId=z.string().uuid().safeParse(req.params.batchId);
+    const body=z.object({
+      outputCategoryId:z.coerce.number().int().positive(),
+      weightKg:z.coerce.number().positive().max(1000000),
+      notes:z.string().trim().max(1000).optional()
+    }).strict().safeParse(req.body);
+    const auth=req.auth;
+    if(!batchId.success||!body.success||!auth){res.status(400).json({error:{code:"VALIDATION_ERROR",message:"Invalid segregation details."}});return;}
+    try{
+      const client=await database.connect();
+      try{
+        await client.query("BEGIN");
+        await client.query("SELECT set_config('app.actor_user_id',$1,true)",[auth.userId]);
+        const category=await client.query("SELECT category_id FROM waste_mgmt.waste_categories WHERE category_id=$1 AND is_active=TRUE",[body.data.outputCategoryId]);
+        if(category.rowCount!==1){
+          await client.query("ROLLBACK");
+          res.status(422).json({error:{code:"INVALID_CATEGORY",message:"The output category is not active."}});
+          return;
+        }
+        const result=await client.query(
+          "INSERT INTO waste_mgmt.segregation_records(source_batch_id,output_category_id,weight_kg,recorded_by,notes) " +
+          "VALUES ($1,$2,$3,$4,$5) RETURNING segregation_id AS \"segregationId\",source_batch_id AS \"sourceBatchId\",weight_kg AS \"weightKg\"",
+          [batchId.data,body.data.outputCategoryId,body.data.weightKg.toFixed(3),auth.userId,body.data.notes??null]
+        );
+        await client.query("COMMIT");
+        res.status(201).json({data:result.rows[0]});
+      }catch(error){await client.query("ROLLBACK").catch(()=>undefined);throw error;}
+      finally{client.release();}
+    }catch(error){next(error);}
+  });
+
+  app.post("/api/v1/materials/allocations", authenticate(database), requirePermission(database, "materials.manage"), async (req,res,next)=>{
+    const body=z.object({
+      sourceBatchId:z.string().uuid().optional(),
+      sourceSegregationId:z.string().uuid().optional(),
+      destinationId:z.string().uuid(),
+      weightKg:z.coerce.number().positive().max(1000000),
+      notes:z.string().trim().max(1000).optional()
+    }).strict().safeParse(req.body);
+    const auth=req.auth;
+    if(!body.success||!auth||Boolean(body.data.sourceBatchId)===Boolean(body.data.sourceSegregationId)){
+      res.status(400).json({error:{code:"VALIDATION_ERROR",message:"Choose exactly one material source and provide a destination and positive weight."}});
+      return;
+    }
+    try{
+      const client=await database.connect();
+      try{
+        await client.query("BEGIN");
+        await client.query("SELECT set_config('app.actor_user_id',$1,true)",[auth.userId]);
+        const destination=await client.query("SELECT destination_id FROM waste_mgmt.material_destinations WHERE destination_id=$1 AND is_active=TRUE",[body.data.destinationId]);
+        if(destination.rowCount!==1){
+          await client.query("ROLLBACK");
+          res.status(422).json({error:{code:"INVALID_DESTINATION",message:"The selected material destination is not active."}});
+          return;
+        }
+        const result=await client.query(
+          "INSERT INTO waste_mgmt.material_allocations(source_batch_id,source_segregation_id,destination_id,weight_kg,allocated_by,notes) " +
+          "VALUES ($1,$2,$3,$4,$5,$6) RETURNING allocation_id AS \"allocationId\",weight_kg AS \"weightKg\",allocated_at AS \"allocatedAt\"",
+          [body.data.sourceBatchId??null,body.data.sourceSegregationId??null,body.data.destinationId,body.data.weightKg.toFixed(3),auth.userId,body.data.notes??null]
+        );
+        await client.query("COMMIT");
+        res.status(201).json({data:result.rows[0]});
+      }catch(error){await client.query("ROLLBACK").catch(()=>undefined);throw error;}
+      finally{client.release();}
+    }catch(error){next(error);}
+  });
+
   app.get("/api/v1/analytics/overview", authenticate(database), requirePermission(database, "analytics.read"), async (_req, res, next) => {
     try {
       const [reportCounts,taskCounts,verifiedWeights,destinationWeights,remainingWeight,zoneReports] = await Promise.all([
