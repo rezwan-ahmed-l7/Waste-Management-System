@@ -21,7 +21,10 @@ export function createApp(database: Database) {
     windowMs: env.PUBLIC_REPORT_RATE_LIMIT_WINDOW_MS,
     limit: env.PUBLIC_REPORT_RATE_LIMIT_MAX,
     standardHeaders: "draft-8",
-    legacyHeaders: false
+    legacyHeaders: false,
+    handler: (_req, res) => {
+      res.status(429).json({ error: { code: "RATE_LIMITED", message: "Too many reports. Please try again later." } });
+    }
   });
 
   app.get("/api/v1/public/form-options", async (_req, res, next) => {
@@ -81,6 +84,16 @@ export function createApp(database: Database) {
       if (area.rowCount !== 1) {
         await client.query("ROLLBACK");
         res.status(422).json({ error: { code: "INVALID_AREA", message: "The selected area is not active for this fest." } });
+        return;
+      }
+
+      const category = await client.query(
+        "SELECT category_id FROM waste_mgmt.waste_categories WHERE category_id=$1 AND is_active=TRUE",
+        [parsed.data.categoryId]
+      );
+      if (category.rowCount !== 1) {
+        await client.query("ROLLBACK");
+        res.status(422).json({ error: { code: "INVALID_CATEGORY", message: "The selected waste category is not active." } });
         return;
       }
 
