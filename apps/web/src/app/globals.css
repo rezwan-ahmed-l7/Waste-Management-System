@@ -136,3 +136,14 @@ h1 { max-width: 720px; margin: 14px 0 18px; font-size: clamp(38px, 6vw, 64px); l
 .userRow .roleList { margin:8px 0 0; }
 .userActions { display:flex; align-items:center; gap:10px; }
 @media(max-width:760px){.userRow{align-items:flex-start;flex-direction:column}.userActions{width:100%;justify-content:space-between}}
+
+.materialForms { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; margin-bottom:16px; }
+.materialForms .formCard { box-shadow:none; padding:15px; gap:10px; }
+.materialForms h3, .roundForm h3 { font-size:16px; }
+.materialForms input, .materialForms select, .roundForm input, .roundForm select { width:100%; min-width:0; padding:10px; border:1px solid var(--line); border-radius:8px; }
+.roundForm { box-shadow:none; margin-bottom:16px; display:grid; grid-template-columns:1.2fr 1.5fr 1fr 1fr auto; align-items:end; gap:10px; }
+.roundForm h3 { grid-column:1/-1; }
+.roundForm label { display:grid; gap:6px; font-size:12px; font-weight:700; }
+.roundForm button, .roundForm .error { grid-column:1/-1; }
+@media(max-width:900px){.materialForms{grid-template-columns:1fr 1fr}.roundForm{grid-template-columns:1fr 1fr}}
+@media(max-width:600px){.materialForms,.roundForm{grid-template-columns:1fr}}
