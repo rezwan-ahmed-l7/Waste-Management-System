@@ -418,10 +418,12 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
       const pageValues = [...values, filters.data.pageSize, (filters.data.page-1)*filters.data.pageSize];
       const result = await database.query(
         "SELECT t.task_id AS \"taskId\", t.title, t.priority, t.status, t.due_at AS \"dueAt\", " +
-        "t.created_at AS \"createdAt\", a.name AS \"areaName\", z.name AS \"zoneName\" " +
+        "t.created_at AS \"createdAt\", a.name AS \"areaName\", z.name AS \"zoneName\", " +
+        "latest.submission_id AS \"latestSubmissionId\", latest.status AS \"latestSubmissionStatus\" " +
         "FROM waste_mgmt.collection_tasks t JOIN waste_mgmt.areas a ON a.area_id=t.area_id " +
-        "JOIN waste_mgmt.zones z ON z.zone_id=a.zone_id WHERE " + where +
-        " ORDER BY t.due_at NULLS LAST, t.created_at DESC LIMIT $" + (values.length+1) +
+        "JOIN waste_mgmt.zones z ON z.zone_id=a.zone_id " +
+        "LEFT JOIN LATERAL (SELECT cs.submission_id,cs.status FROM waste_mgmt.collection_submissions cs WHERE cs.task_id=t.task_id ORDER BY cs.submitted_at DESC LIMIT 1) latest ON TRUE " +
+        "WHERE " + where + " ORDER BY t.due_at NULLS LAST, t.created_at DESC LIMIT $" + (values.length+1) +
         " OFFSET $" + (values.length+2),
         pageValues
       );
