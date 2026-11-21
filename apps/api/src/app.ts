@@ -1799,17 +1799,19 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
     if(!id.success||!body.success){res.status(400).json({error:{code:"VALIDATION_ERROR",message:"Invalid cleaning round status."}});return;}
     const allowed:Record<string,string[]>={draft:["scheduled","cancelled"],scheduled:["active","cancelled"],active:["completed","cancelled"],completed:[],cancelled:[]};
     try{
-      const current=await database.query("SELECT status FROM waste_mgmt.cleaning_rounds WHERE round_id=$1 AND fest_id=1",[id.data]);
-      if(!current.rows[0]){res.status(404).json({error:{code:"ROUND_NOT_FOUND",message:"Cleaning round not found."}});return;}
-      if(!allowed[String(current.rows[0].status)]?.includes(body.data.status)){
-        res.status(409).json({error:{code:"INVALID_ROUND_TRANSITION",message:"The cleaning round cannot move to the requested status."}});
-        return;
-      }
-      const result=await database.query(
-        "UPDATE waste_mgmt.cleaning_rounds SET status=$1 WHERE round_id=$2 RETURNING round_id AS \"roundId\",status",
-        [body.data.status,id.data]
-      );
-      res.status(200).json({data:result.rows[0]});
+      const outcome=await auditedMutation(database,req,res,async client=>{
+        const current=await client.query("SELECT status FROM waste_mgmt.cleaning_rounds WHERE round_id=$1 AND fest_id=1 FOR UPDATE",[id.data]);
+        if(!current.rows[0])return {kind:"missing" as const};
+        if(!allowed[String(current.rows[0].status)]?.includes(body.data.status))return {kind:"invalid" as const};
+        const result=await client.query(
+          "UPDATE waste_mgmt.cleaning_rounds SET status=$1 WHERE round_id=$2 RETURNING round_id AS \"roundId\",status",
+          [body.data.status,id.data]
+        );
+        return {kind:"updated" as const,data:result.rows[0]};
+      });
+      if(outcome.kind==="missing"){res.status(404).json({error:{code:"ROUND_NOT_FOUND",message:"Cleaning round not found."}});return;}
+      if(outcome.kind==="invalid"){res.status(409).json({error:{code:"INVALID_ROUND_TRANSITION",message:"The cleaning round cannot move to the requested status."}});return;}
+      res.status(200).json({data:outcome.data});
     }catch(error){next(error);}
   });
 
