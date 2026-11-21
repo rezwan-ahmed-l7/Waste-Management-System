@@ -83,7 +83,7 @@ Triggers lock source rows and reject allocations/segregation totals above source
 | `audit_logs` | Actor, action, entity, request ID and intentionally narrow safe metadata |
 | `idempotency_keys` | Reserved persistence structure for future retry-safe operations; not yet exposed as a general API feature |
 
-Audit triggers capture selected operational row changes. The API sets actor/request context within transactions where supported. Audit metadata intentionally excludes passwords, tokens, personal contact fields, report descriptions and file contents.
+Audit triggers capture changes to fest configuration, reports, report notes/attachments, users/roles, zones/areas/bins/categories, teams/memberships, cleaning rounds, tasks/assignments, collection records/submissions, material batches/segregation/destinations/allocations, and announcements. Every audited API mutation runs inside a transaction that sets transaction-local `app.actor_user_id` and `app.request_id`; anonymous report submissions intentionally have a null actor but retain the request ID. Metadata is intentionally narrow and does not include personal contact details, report descriptions, passwords, session hashes, or file contents. Audit metadata intentionally excludes passwords, tokens, personal contact fields, report descriptions and file contents.
 
 ## 8. Views, indexes and query suite
 

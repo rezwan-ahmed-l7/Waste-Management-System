@@ -46,6 +46,10 @@ jobs:
         run: npm audit --audit-level=moderate
       - run: npm run typecheck
       - run: npm run lint
+      - name: Validate operational shell scripts
+        run: |
+          bash -n database/002_grants.sh
+          bash -n scripts/backup-compose.sh
       - run: npm test
       - name: Apply PostgreSQL schema
         run: psql -v ON_ERROR_STOP=1 "$DATABASE_URL" -f database/001_schema.sql

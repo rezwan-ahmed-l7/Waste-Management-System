@@ -78,9 +78,9 @@ The API and web containers run as UID 1000 and are not published directly; Caddy
 - [x] Location/category administration, teams, memberships, rounds, tasks, assignments, collection submissions and manager decisions implemented.
 - [x] Verified-only material batches, segregation, destinations, allocations and database balance guards implemented.
 - [x] In-app notifications, announcements, analytics, date-scoped printable final fest report, CSV exports, fest settings and audit-log screens implemented.
-- [x] CI passed on 2026-11-21 for commit `f879b7237e8e4e63cee4441e07be04ce5c561a58`: clean `npm ci`, `npm audit` (0 advisories), typecheck, lint, 17 Vitest tests, PostgreSQL 16 schema verification, database smoke tests, reporting SQL, PostgreSQL 16 dump/restore round-trip verification and production build.
+- [x] CI passed on 2026-11-21 for commit `db3906f432e9c0b9f78c74e4b4e499dbbc2e0168`: clean `npm ci`, `npm audit` (0 advisories), typecheck, lint, 19 Vitest tests, PostgreSQL 16 schema verification and integrity smoke tests as a non-superuser runtime role, actor/request audit-context assertion, two-connection allocation race, reporting SQL, PostgreSQL dump/restore round trip, production build, Compose validation, Docker image build and non-root container check.
 - [ ] Expand role/resource authorization and lifecycle regression coverage; add browser-level journeys.
-- [x] CI verifies PostgreSQL backup/restore and a two-connection concurrent-allocation race; a production restore drill and live host/domain deployment remain operator tasks.
+- [x] CI verifies PostgreSQL backup/restore, non-superuser runtime privileges, audit context and a two-connection concurrent-allocation race; coordinated production database+evidence restore drill and live host/domain deployment remain operator tasks.
 - [ ] Complete operational security review and confirm fest-specific settings, privacy/retention policy, hosting and persistent private storage before production use.
 
 The core implementation is not a production deployment. Keep this branch unmerged until the remaining verification and operational gates are complete and the owner explicitly approves integration.

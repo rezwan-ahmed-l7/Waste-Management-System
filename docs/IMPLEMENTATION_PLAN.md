@@ -133,6 +133,7 @@ A feature is done only when requirements and permissions are documented; UI/API/
 - [x] Add role assignment, administrator account creation, account suspension and session revocation.
 - [x] Protect the last active administrator from accidental removal or suspension.
 - [x] Add middleware allow/deny and invalid/expired session regression tests.
+- [x] Add API tests for transaction-local actor/request context on location writes and task start.
 - [ ] Expand tests across every role/resource scope and privilege-change session behavior.
 
 ### Phase 3 — Event and location progress
@@ -172,7 +173,7 @@ A feature is done only when requirements and permissions are documented; UI/API/
 - [x] Add PostgreSQL CI service, schema verification, database smoke tests, dependency audit and production build checks.
 - [x] Resolve all npm audit findings in the locked dependency tree.
 - [ ] Add browser-level journeys and broader role/resource authorization regression tests.
-- [x] Verify PostgreSQL dump/restore round trip and schema/smoke/reporting checks in CI; production evidence-file backup remains an operator task.
+- [x] Verify PostgreSQL dump/restore round trip, non-superuser runtime grants, audit actor/request context, concurrency guard, schema/smoke/reporting checks in CI; production evidence-file restore remains an operator task.
 - [x] Add Docker Compose/Caddy deployment template, non-root app containers, least-privilege PostgreSQL role, private evidence volume, administrator bootstrap and coordinated backup script; actual DNS/host provisioning and a real restore drill remain operator-owned.
 - [ ] Complete final security, privacy/retention and operational review.
 
