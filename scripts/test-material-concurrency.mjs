@@ -4,7 +4,7 @@ import { Pool } from "pg";
 const connectionString = process.env.DATABASE_URL;
 if (!connectionString) throw new Error("DATABASE_URL is required for material concurrency verification.");
 
-const pool = new Pool({ connectionString, max: 5 });
+const pool = new Pool({ connectionString, max: 5, options: "-c search_path=waste_mgmt,public" });
 const suffix = randomUUID().replaceAll("-", "").slice(0, 12);
 let ids = {};
 
