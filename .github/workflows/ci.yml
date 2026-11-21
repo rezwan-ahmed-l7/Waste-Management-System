@@ -57,9 +57,9 @@ jobs:
         run: psql -v ON_ERROR_STOP=1 "$DATABASE_URL" -f database/003_reporting_queries.sql
       - name: Exercise PostgreSQL backup and restore
         run: |
-          pg_dump --format=custom --no-owner --no-acl "$DATABASE_URL" --file "$RUNNER_TEMP/waste_management.dump"
+          docker run --rm --network host -e PGPASSWORD=postgres -v "$RUNNER_TEMP:/backup" postgres:16 pg_dump -h 127.0.0.1 -U postgres -d waste_management -Fc --no-owner --no-acl -f /backup/waste_management.dump
           PGPASSWORD=postgres createdb -h localhost -U postgres waste_management_restore_check
-          pg_restore --exit-on-error --no-owner --no-privileges -d postgresql://postgres:postgres@localhost:5432/waste_management_restore_check "$RUNNER_TEMP/waste_management.dump"
+          docker run --rm --network host -e PGPASSWORD=postgres -v "$RUNNER_TEMP:/backup" postgres:16 pg_restore -h 127.0.0.1 -U postgres -d waste_management_restore_check --exit-on-error --no-owner --no-privileges /backup/waste_management.dump
           DATABASE_URL=postgresql://postgres:postgres@localhost:5432/waste_management_restore_check npm run db:verify
           psql -v ON_ERROR_STOP=1 postgresql://postgres:postgres@localhost:5432/waste_management_restore_check -f database/002_smoke_test.sql
           psql -v ON_ERROR_STOP=1 postgresql://postgres:postgres@localhost:5432/waste_management_restore_check -f database/003_reporting_queries.sql
