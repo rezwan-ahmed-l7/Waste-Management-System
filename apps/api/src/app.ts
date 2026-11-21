@@ -2227,6 +2227,15 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
 
   const errors: ErrorRequestHandler = (error, _req, res, _next) => {
     if (res.headersSent) return;
+    if (error instanceof multer.MulterError) {
+      const status = error.code === "LIMIT_FILE_SIZE" ? 413 : 400;
+      res.status(status).json({ error: { code: error.code, message: status === 413 ? "Each file must be 5 MB or smaller." : "The upload contains too many files or fields." } });
+      return;
+    }
+    if (error instanceof UnsupportedUploadError) {
+      res.status(415).json({ error: { code: "UNSUPPORTED_FILE_TYPE", message: error.message } });
+      return;
+    }
     const status = typeof error === "object" && error !== null && "status" in error
       ? Number((error as { status?: unknown }).status)
       : 500;
