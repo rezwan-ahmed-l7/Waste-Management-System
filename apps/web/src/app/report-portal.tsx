@@ -9,7 +9,7 @@ type FormOptions = {
   categories: { categoryId: number; name: string }[];
 };
 type Submission = { reportId: string; trackingToken: string; submittedAt: string };
-type PublicStatus = { report_id: string; status: string; submitted_at: string; updated_at: string };
+type PublicStatus = { report_id: string; status: string; submitted_at: string; updated_at: string; history: {status:string;changedAt:string}[]; notes: {body:string;createdAt:string}[] };
 
 export function ReportPortal() {
   const [options, setOptions] = useState<FormOptions>({ areas: [], categories: [] });
@@ -20,6 +20,7 @@ export function ReportPortal() {
   const [description, setDescription] = useState("");
   const [reporterName, setReporterName] = useState("");
   const [reporterContact, setReporterContact] = useState("");
+  const [attachments, setAttachments] = useState<File[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [submission, setSubmission] = useState<Submission | null>(null);
   const [submitError, setSubmitError] = useState("");
@@ -54,16 +55,16 @@ export function ReportPortal() {
     setSubmitError("");
     setSubmission(null);
     try {
+      const formData = new FormData();
+      formData.append("areaId", areaId);
+      formData.append("categoryId", categoryId);
+      formData.append("description", description);
+      if (reporterName.trim()) formData.append("reporterName", reporterName.trim());
+      if (reporterContact.trim()) formData.append("reporterContact", reporterContact.trim());
+      attachments.forEach(file => formData.append("attachments", file));
       const response = await fetch(`${API}/public/reports`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          areaId,
-          categoryId: Number(categoryId),
-          description,
-          ...(reporterName.trim() ? { reporterName: reporterName.trim() } : {}),
-          ...(reporterContact.trim() ? { reporterContact: reporterContact.trim() } : {})
-        })
+        body: formData
       });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error?.message ?? "Report submission failed.");
@@ -73,6 +74,7 @@ export function ReportPortal() {
       setDescription("");
       setReporterName("");
       setReporterContact("");
+      setAttachments([]);
     } catch (error) {
       setSubmitError(error instanceof Error ? error.message : "Report submission failed.");
     } finally {
@@ -133,6 +135,10 @@ export function ReportPortal() {
               <input maxLength={254} value={reporterContact} onChange={event => setReporterContact(event.target.value)} placeholder="Email or phone" />
             </label>
           </div>
+          <label>Evidence photos or PDF <span className="muted">(optional, up to 5 files · 5 MB each)</span>
+            <input type="file" multiple accept="image/jpeg,image/png,image/webp,application/pdf" onChange={event=>setAttachments(Array.from(event.target.files??[]).slice(0,5))} />
+          </label>
+          {attachments.length>0 ? <p className="muted">{attachments.map(file=>file.name).join(" · ")}</p> : null}
           <p className="privacyNote">No account is required. Name and contact are optional. Do not include sensitive personal information.</p>
           {submitError ? <p className="error" role="alert">{submitError}</p> : null}
           <button className="primaryButton" disabled={submitting || loadingOptions || options.areas.length === 0 || options.categories.length === 0}>
@@ -166,6 +172,8 @@ export function ReportPortal() {
               <strong>{status.status.replaceAll("_", " ")}</strong>
               <small>Submitted: {new Date(status.submitted_at).toLocaleString()}</small>
               <small>Last updated: {new Date(status.updated_at).toLocaleString()}</small>
+              {status.history?.length ? <div className="trackingHistory"><strong>Status history</strong>{status.history.map((item,index)=><div className="historyItem" key={index}><span>{item.status.replaceAll("_"," ")}</span><small>{new Date(item.changedAt).toLocaleString()}</small></div>)}</div> : null}
+              {status.notes?.length ? <div className="trackingNotes"><strong>Updates from the waste management team</strong>{status.notes.map((note,index)=><p key={index}>{note.body}<small>{new Date(note.createdAt).toLocaleString()}</small></p>)}</div> : null}
             </div>
           ) : null}
         </form>
