@@ -100,8 +100,8 @@ export default function DashboardPage() {
       canWork ? apiRequest("/tasks?pageSize=30") : Promise.resolve({data:[]}),
       canWork ? apiRequest("/public/form-options") : Promise.resolve({categories:[]})
     ]);
-    setReports(reportPayload.data ?? []);
-    setTasks(taskPayload.data ?? []);
+    setReports(reportPayload ?? []);
+    setTasks(taskPayload ?? []);
     setCategories(optionsPayload.categories ?? []);
   },[]);
 
@@ -134,7 +134,7 @@ export default function DashboardPage() {
   if(!user)return <main className="authPage"><p>Redirecting to sign in…</p></main>;
 
   const isManager = user.roles.some(role=>["administrator","waste_manager"].includes(role));
-  const canReviewReports = isManager;
+  const canViewReports = user.roles.some(role=>["administrator","waste_manager","fest_organizer"].includes(role));\n  const canReviewReports = isManager;
   const canManageTasks = isManager;
   const canExecuteTasks = user.roles.some(role=>["team_lead","volunteer"].includes(role));
 
@@ -151,7 +151,7 @@ export default function DashboardPage() {
         <div className="roleList">{user.roles.map(role=><span className="rolePill" key={role}>{role.replaceAll("_"," ")}</span>)}</div>
         {error ? <p className="error" role="alert">{error}</p> : null}
 
-        {canReviewReports ? (
+        {canViewReports ? (
           <section className="workspaceSection">
             <div className="sectionHeading"><div><div className="eyebrow">Incoming reports</div><h2>Waste reports</h2></div><span className="countPill">{reports.length}</span></div>
             {reports.length===0 ? <p className="emptyState">No reports match the current view.</p> : reports.map(report=>(
