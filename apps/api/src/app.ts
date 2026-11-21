@@ -1454,6 +1454,89 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
     }catch(error){next(error);}
   });
 
+
+  app.post("/api/v1/cleaning-rounds/:roundId/tasks", authenticate(database), requirePermission(database, "tasks.manage"), async (req,res,next)=>{
+    const roundId=z.string().uuid().safeParse(req.params.roundId);
+    const body=z.object({
+      title:z.string().trim().min(3).max(160),
+      instructions:z.string().trim().max(3000).optional(),
+      priority:z.enum(["low","normal","high","urgent"]).default("normal"),
+      dueAt:z.string().datetime().optional(),
+      assignedUserId:z.string().uuid().optional(),
+      assignedTeamId:z.string().uuid().optional()
+    }).strict().safeParse(req.body);
+    const auth=req.auth;
+    if(!roundId.success||!body.success||!auth||Boolean(body.data.assignedUserId)&&Boolean(body.data.assignedTeamId)){
+      res.status(400).json({error:{code:"VALIDATION_ERROR",message:"Invalid round task details or assignment."}});
+      return;
+    }
+    try{
+      const client=await database.connect();
+      try{
+        await client.query("BEGIN");
+        await client.query("SELECT set_config('app.actor_user_id',$1,true)",[auth.userId]);
+        const round=await client.query(
+          "SELECT round_id,area_id,status,planned_end_at FROM waste_mgmt.cleaning_rounds WHERE round_id=$1 AND fest_id=1 FOR UPDATE",
+          [roundId.data]
+        );
+        const current=round.rows[0];
+        if(!current||!["scheduled","active"].includes(current.status)){
+          await client.query("ROLLBACK");
+          res.status(409).json({error:{code:"ROUND_NOT_ACTIVE",message:"Tasks can only be added to a scheduled or active cleaning round."}});
+          return;
+        }
+        if(body.data.dueAt&&new Date(body.data.dueAt)>new Date(current.planned_end_at)){
+          await client.query("ROLLBACK");
+          res.status(422).json({error:{code:"TASK_DUE_AFTER_ROUND",message:"A task due time cannot be later than the round end time."}});
+          return;
+        }
+        if(body.data.assignedUserId){
+          const user=await client.query("SELECT user_id FROM waste_mgmt.users WHERE user_id=$1 AND status='active'",[body.data.assignedUserId]);
+          if(user.rowCount!==1){await client.query("ROLLBACK");res.status(422).json({error:{code:"INVALID_ASSIGNEE",message:"The selected user is not active."}});return;}
+        }
+        if(body.data.assignedTeamId){
+          const team=await client.query("SELECT team_id FROM waste_mgmt.teams WHERE team_id=$1 AND is_active=TRUE",[body.data.assignedTeamId]);
+          if(team.rowCount!==1){await client.query("ROLLBACK");res.status(422).json({error:{code:"INVALID_TEAM",message:"The selected team is not active."}});return;}
+        }
+        const inserted=await client.query(
+          "INSERT INTO waste_mgmt.collection_tasks(fest_id,round_id,area_id,title,instructions,priority,due_at,created_by) " +
+          "VALUES (1,$1,$2,$3,$4,$5,$6,$7) RETURNING task_id AS \"taskId\",status",
+          [roundId.data,current.area_id,body.data.title,body.data.instructions??null,body.data.priority,body.data.dueAt??null,auth.userId]
+        );
+        const task=inserted.rows[0];
+        if(!task)throw new Error("Round task creation returned no row.");
+        await client.query(
+          "INSERT INTO waste_mgmt.task_status_history(task_id,from_status,to_status,changed_by) VALUES ($1,NULL,'open',$2)",
+          [task.taskId,auth.userId]
+        );
+        if(body.data.assignedUserId||body.data.assignedTeamId){
+          await client.query(
+            "INSERT INTO waste_mgmt.task_assignments(task_id,user_id,team_id,assigned_by) VALUES ($1,$2,$3,$4)",
+            [task.taskId,body.data.assignedUserId??null,body.data.assignedTeamId??null,auth.userId]
+          );
+          await client.query("UPDATE waste_mgmt.collection_tasks SET status='assigned' WHERE task_id=$1",[task.taskId]);
+          if(body.data.assignedUserId){
+            await client.query(
+              "INSERT INTO waste_mgmt.notifications(user_id,type,title,body,resource_type,resource_id) VALUES ($1,'task_assignment','New collection task',$2,'task',$3)",
+              [body.data.assignedUserId,body.data.title,task.taskId]
+            );
+          }else if(body.data.assignedTeamId){
+            await client.query(
+              "INSERT INTO waste_mgmt.notifications(user_id,type,title,body,resource_type,resource_id) " +
+              "SELECT tm.user_id,'task_assignment','New team task',$2,'task',$3 FROM waste_mgmt.team_memberships tm " +
+              "JOIN waste_mgmt.users u ON u.user_id=tm.user_id AND u.status='active' " +
+              "WHERE tm.team_id=$1 AND tm.ends_at IS NULL AND tm.starts_at<=now()",
+              [body.data.assignedTeamId,body.data.title,task.taskId]
+            );
+          }
+        }
+        await client.query("COMMIT");
+        res.status(201).json({data:{...task,status:body.data.assignedUserId||body.data.assignedTeamId?"assigned":"open"}});
+      }catch(error){await client.query("ROLLBACK").catch(()=>undefined);throw error;}
+      finally{client.release();}
+    }catch(error){next(error);}
+  });
+
   app.patch("/api/v1/cleaning-rounds/:roundId/status", authenticate(database), requirePermission(database, "tasks.manage"), async (req,res,next)=>{
     const id=z.string().uuid().safeParse(req.params.roundId);
     const body=z.object({status:z.enum(["draft","scheduled","active","completed","cancelled"])}).strict().safeParse(req.body);
