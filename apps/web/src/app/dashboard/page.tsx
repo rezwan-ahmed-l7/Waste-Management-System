@@ -79,12 +79,96 @@ function EvidenceForm({ taskId, categories, onDone }: { taskId: string; categori
   );
 }
 
+
+type AssignableUser = { userId: string; fullName: string; email: string };
+type Team = { teamId: string; name: string; code: string; activeMemberCount: number };
+
+function TeamCreateForm({ users, onDone }: { users: AssignableUser[]; onDone: () => void }) {
+  const [name,setName] = useState("");
+  const [code,setCode] = useState("");
+  const [lead,setLead] = useState("");
+  const [error,setError] = useState("");
+  const [saving,setSaving] = useState(false);
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault(); setSaving(true); setError("");
+    try {
+      await apiRequest("/teams",{method:"POST",body:JSON.stringify({name,code,...(lead?{teamLeadUserId:lead}:{})})});
+      setName(""); setCode(""); setLead(""); onDone();
+    } catch(cause) { setError(cause instanceof Error?cause.message:"Team creation failed."); }
+    finally { setSaving(false); }
+  }
+  return <form className="teamForm" onSubmit={submit}>
+    <strong>Create a cleaning team</strong>
+    <input required minLength={2} maxLength={100} value={name} onChange={event=>setName(event.target.value)} placeholder="Team name" />
+    <input required minLength={2} maxLength={40} value={code} onChange={event=>setCode(event.target.value)} placeholder="Team code" />
+    <select value={lead} onChange={event=>setLead(event.target.value)}>
+      <option value="">No team lead yet</option>
+      {users.map(user=><option key={user.userId} value={user.userId}>{user.fullName}</option>)}
+    </select>
+    {error?<p className="error">{error}</p>:null}
+    <button className="secondaryButton" disabled={saving}>{saving?"Creating…":"Create team"}</button>
+  </form>;
+}
+
+function TeamMemberForm({ team, users, onDone }: { team: Team; users: AssignableUser[]; onDone: () => void }) {
+  const [userId,setUserId] = useState("");
+  const [error,setError] = useState("");
+  const [saving,setSaving] = useState(false);
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault(); if(!userId)return; setSaving(true); setError("");
+    try {
+      await apiRequest("/teams/"+team.teamId+"/members",{method:"POST",body:JSON.stringify({userId,memberRole:"volunteer"})});
+      setUserId(""); onDone();
+    } catch(cause) { setError(cause instanceof Error?cause.message:"Could not add team member."); }
+    finally { setSaving(false); }
+  }
+  return <form className="memberForm" onSubmit={submit}>
+    <select required value={userId} onChange={event=>setUserId(event.target.value)}>
+      <option value="">Add a volunteer…</option>
+      {users.map(user=><option key={user.userId} value={user.userId}>{user.fullName}</option>)}
+    </select>
+    <button className="secondaryButton" disabled={saving || !userId}>{saving?"Adding…":"Add member"}</button>
+    {error?<span className="error">{error}</span>:null}
+  </form>;
+}
+
+function TaskAssignmentForm({ taskId, users, teams, onDone }: { taskId: string; users: AssignableUser[]; teams: Team[]; onDone: () => void }) {
+  const [kind,setKind] = useState<"user"|"team">("team");
+  const [target,setTarget] = useState("");
+  const [replace,setReplace] = useState(false);
+  const [error,setError] = useState("");
+  const [saving,setSaving] = useState(false);
+  const options = kind==="team" ? teams.map(team=>({id:team.teamId,label:team.name})) : users.map(user=>({id:user.userId,label:user.fullName}));
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault(); if(!target)return; setSaving(true); setError("");
+    try {
+      await apiRequest("/tasks/"+taskId+"/assignments",{method:"POST",body:JSON.stringify({
+        ...(kind==="team"?{teamId:target}:{userId:target}),replaceExisting:replace
+      })});
+      setTarget(""); setReplace(false); onDone();
+    } catch(cause) { setError(cause instanceof Error?cause.message:"Assignment failed."); }
+    finally { setSaving(false); }
+  }
+  return <form className="assignmentForm" onSubmit={submit}>
+    <select value={kind} onChange={event=>{setKind(event.target.value as "user"|"team");setTarget("");}}>
+      <option value="team">Assign team</option><option value="user">Assign individual</option>
+    </select>
+    <select required value={target} onChange={event=>setTarget(event.target.value)}>
+      <option value="">Choose {kind}</option>
+      {options.map(option=><option key={option.id} value={option.id}>{option.label}</option>)}
+    </select>
+    <label className="checkLabel"><input type="checkbox" checked={replace} onChange={event=>setReplace(event.target.checked)} /> Replace current assignments</label>
+    <button className="secondaryButton" disabled={saving || !target}>{saving?"Assigning…":"Assign"}</button>
+    {error?<span className="error">{error}</span>:null}
+  </form>;
+}
+
 export default function DashboardPage() {
   const router = useRouter();
   const [user,setUser] = useState<CurrentUser | null>(null);
   const [reports,setReports] = useState<Report[]>([]);
   const [tasks,setTasks] = useState<Task[]>([]);
-  const [categories,setCategories] = useState<Category[]>([]);
+  const [categories,setCategories] = useState<Category[]>([]);\n  const [assignableUsers,setAssignableUsers] = useState<AssignableUser[]>([]);\n  const [teams,setTeams] = useState<Team[]>([]);
   const [error,setError] = useState("");
   const [loading,setLoading] = useState(true);
   const [workingId,setWorkingId] = useState("");
@@ -95,14 +179,14 @@ export default function DashboardPage() {
     setUser(current);
     const isManager = current.roles.some(role=>["administrator","waste_manager","fest_organizer"].includes(role));
     const canWork = current.roles.some(role=>["administrator","waste_manager","team_lead","volunteer"].includes(role));
-    const [reportPayload,taskPayload,optionsPayload] = await Promise.all([
+    const canManage = current.roles.some(role=>["administrator","waste_manager"].includes(role));\n    const [reportPayload,taskPayload,optionsPayload,userPayload,teamPayload] = await Promise.all([
       isManager ? apiRequest("/reports?pageSize=30") : Promise.resolve({data:[]}),
       canWork ? apiRequest("/tasks?pageSize=30") : Promise.resolve({data:[]}),
       canWork ? apiRequest("/public/form-options") : Promise.resolve({categories:[]})
     ]);
     setReports(reportPayload ?? []);
     setTasks(taskPayload ?? []);
-    setCategories(optionsPayload.categories ?? []);
+    setCategories(optionsPayload.categories ?? []);\n    setAssignableUsers(userPayload ?? []);\n    setTeams(teamPayload ?? []);
   },[]);
 
   useEffect(() => {
@@ -184,7 +268,7 @@ export default function DashboardPage() {
                 <div className="buttonRow">
                   {canExecuteTasks && task.status==="assigned" ? <button className="primaryButton" disabled={workingId===task.taskId} onClick={()=>perform(task.taskId,()=>apiRequest("/tasks/"+task.taskId+"/start",{method:"POST"}))}>Start task</button> : null}
                   {canExecuteTasks && task.status==="in_progress" ? <EvidenceForm taskId={task.taskId} categories={categories} onDone={()=>void loadData()}/> : null}
-                  {canManageTasks && task.status==="submitted_for_verification" && task.latestSubmissionId ? <>
+                  {canManageTasks && ["open","assigned"].includes(task.status) ? <TaskAssignmentForm taskId={task.taskId} users={assignableUsers} teams={teams} onDone={()=>void loadData()} /> : null}\n                  {canManageTasks && task.status==="submitted_for_verification" && task.latestSubmissionId ? <>
                     <button className="primaryButton" disabled={workingId===task.taskId} onClick={()=>perform(task.taskId,()=>apiRequest("/collection-submissions/"+task.latestSubmissionId+"/decision",{method:"POST",body:JSON.stringify({decision:"verify"})}))}>Verify collection</button>
                     <button className="dangerButton" disabled={workingId===task.taskId} onClick={()=>{const reason=window.prompt("What needs correction?");if(reason?.trim())void perform(task.taskId,()=>apiRequest("/collection-submissions/"+task.latestSubmissionId+"/decision",{method:"POST",body:JSON.stringify({decision:"reject",reason})}));}}>Reject evidence</button>
                   </> : null}
