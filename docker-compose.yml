@@ -17,6 +17,14 @@ services:
       retries: 10
     networks: [private]
 
+  evidence-init:
+    image: alpine:3.22
+    user: "0:0"
+    command: ["sh","-c","mkdir -p /data/private && chown -R 1000:1000 /data/private"]
+    volumes:
+      - private_evidence:/data/private
+    restart: "no"
+
   api:
     build:
       context: .
@@ -25,12 +33,12 @@ services:
     image: baust-waste-management:local
     restart: unless-stopped
     command: ["npm","run","start","--workspace","@waste/api"]
+    user: "1000:1000"
     environment:
       NODE_ENV: production
       API_HOST: 0.0.0.0
       API_PORT: 4000
       DATABASE_URL: postgresql://waste_app:${APP_DB_PASSWORD}@db:5432/waste_management
-      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?Set APP_DB_PASSWORD in .env.production}
       WEB_ORIGIN: https://${DOMAIN}
       PRIVATE_STORAGE_DIR: /data/private
       BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:-}
@@ -42,6 +50,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      evidence-init:
+        condition: service_completed_successfully
     expose: ["4000"]
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4000/api/v1/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
@@ -54,6 +64,7 @@ services:
     image: baust-waste-management:local
     restart: unless-stopped
     command: ["npm","run","start","--workspace","@waste/web"]
+    user: "1000:1000"
     environment:
       NODE_ENV: production
       PORT: 3000
