@@ -38,6 +38,9 @@ BEGIN
   VALUES (1,v_area,'Schema smoke test task',v_admin)
   RETURNING task_id INTO v_task;
 
+  -- Move the task into its execution state before testing verification.
+  UPDATE collection_tasks SET status='in_progress' WHERE task_id=v_task;
+
   -- A task cannot be verified without accepted evidence or a no-waste reason.
   v_rejected := FALSE;
   BEGIN
@@ -69,6 +72,7 @@ BEGIN
     RAISE EXCEPTION 'Verified submission did not create a material batch';
   END IF;
 
+  UPDATE collection_tasks SET status='submitted_for_verification' WHERE task_id=v_task;
   UPDATE collection_tasks
   SET status='verified', verified_by=v_admin, verified_at=now()
   WHERE task_id=v_task;
