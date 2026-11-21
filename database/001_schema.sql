@@ -563,6 +563,22 @@ CREATE TRIGGER trg_audit_submissions AFTER INSERT OR UPDATE OR DELETE ON collect
 FOR EACH ROW EXECUTE FUNCTION audit_row_change('submission_id');
 CREATE TRIGGER trg_audit_allocations AFTER INSERT OR UPDATE OR DELETE ON material_allocations
 FOR EACH ROW EXECUTE FUNCTION audit_row_change('allocation_id');
+CREATE TRIGGER trg_audit_users AFTER INSERT OR UPDATE OR DELETE ON users FOR EACH ROW EXECUTE FUNCTION audit_row_change('user_id');
+CREATE TRIGGER trg_audit_user_roles AFTER INSERT OR UPDATE OR DELETE ON user_roles FOR EACH ROW EXECUTE FUNCTION audit_row_change('user_id');
+CREATE TRIGGER trg_audit_teams AFTER INSERT OR UPDATE OR DELETE ON teams FOR EACH ROW EXECUTE FUNCTION audit_row_change('team_id');
+CREATE TRIGGER trg_audit_team_memberships AFTER INSERT OR UPDATE OR DELETE ON team_memberships FOR EACH ROW EXECUTE FUNCTION audit_row_change('membership_id');
+CREATE TRIGGER trg_audit_task_assignments AFTER INSERT OR UPDATE OR DELETE ON task_assignments FOR EACH ROW EXECUTE FUNCTION audit_row_change('assignment_id');
+CREATE TRIGGER trg_audit_zones AFTER INSERT OR UPDATE OR DELETE ON zones FOR EACH ROW EXECUTE FUNCTION audit_row_change('zone_id');
+CREATE TRIGGER trg_audit_areas AFTER INSERT OR UPDATE OR DELETE ON areas FOR EACH ROW EXECUTE FUNCTION audit_row_change('area_id');
+CREATE TRIGGER trg_audit_bins AFTER INSERT OR UPDATE OR DELETE ON bins FOR EACH ROW EXECUTE FUNCTION audit_row_change('bin_id');
+CREATE TRIGGER trg_audit_waste_categories AFTER INSERT OR UPDATE OR DELETE ON waste_categories FOR EACH ROW EXECUTE FUNCTION audit_row_change('category_id');
+CREATE TRIGGER trg_audit_announcements AFTER INSERT OR UPDATE OR DELETE ON announcements FOR EACH ROW EXECUTE FUNCTION audit_row_change('announcement_id');
+CREATE TRIGGER trg_audit_material_batches AFTER INSERT OR UPDATE OR DELETE ON material_batches FOR EACH ROW EXECUTE FUNCTION audit_row_change('batch_id');
+CREATE TRIGGER trg_audit_segregation AFTER INSERT OR UPDATE OR DELETE ON segregation_records FOR EACH ROW EXECUTE FUNCTION audit_row_change('segregation_id');
+CREATE TRIGGER trg_audit_destinations AFTER INSERT OR UPDATE OR DELETE ON material_destinations FOR EACH ROW EXECUTE FUNCTION audit_row_change('destination_id');
+CREATE TRIGGER trg_audit_collection_records AFTER INSERT OR UPDATE OR DELETE ON collection_records FOR EACH ROW EXECUTE FUNCTION audit_row_change('collection_record_id');
+CREATE TRIGGER trg_audit_report_notes AFTER INSERT OR UPDATE OR DELETE ON report_notes FOR EACH ROW EXECUTE FUNCTION audit_row_change('note_id');
+CREATE TRIGGER trg_audit_report_attachments AFTER INSERT OR UPDATE OR DELETE ON report_attachments FOR EACH ROW EXECUTE FUNCTION audit_row_change('attachment_id');
 
 
 -- Collection records are editable only while their parent submission is pending.
