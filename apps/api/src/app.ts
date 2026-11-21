@@ -1123,7 +1123,7 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
     }
     const csvCell = (value: unknown) => {
       let text = value === null || value === undefined ? "" : String(value);
-      if (/^[=+@-]/.test(text)) text = "'" + text;
+      if (/^[\\s]*[=+@-]/.test(text)) text = "'" + text;
       return '"' + text.replace(/"/g,'""') + '"';
     };
     try {
@@ -1149,7 +1149,7 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
       } else {
         headers = ["submissionId","taskId","category","weightKg","measurementMethod","measuredAt"];
         const result = await database.query(
-          "SELECT cs.submission_id AS \"submissionId\",cr.submission_id AS \"taskId\",wc.name AS category,cr.weight_kg AS \"weightKg\",cr.measurement_method AS \"measurementMethod\",cr.measured_at AS \"measuredAt\" " +
+          "SELECT cs.submission_id AS \"submissionId\",cs.task_id AS \"taskId\",wc.name AS category,cr.weight_kg AS \"weightKg\",cr.measurement_method AS \"measurementMethod\",cr.measured_at AS \"measuredAt\" " +
           "FROM waste_mgmt.collection_records cr JOIN waste_mgmt.collection_submissions cs ON cs.submission_id=cr.submission_id " +
           "JOIN waste_mgmt.waste_categories wc ON wc.category_id=cr.category_id WHERE cs.status='verified' " +
           "ORDER BY cr.measured_at DESC LIMIT 10000"
