@@ -99,9 +99,9 @@ All routes are mounted under `/api/v1`. The current route inventory is visible i
 - Collection: submission creation, evidence photos, manager verification/rejection.
 - Material flow: overview, destinations, segregation and allocations.
 - Communications: announcements, notifications and read-state updates.
-- Analytics and operations: overview, CSV exports, audit logs, health and readiness.
+- Analytics and operations: overview, date-scoped final fest report, CSV exports, audit logs, health and readiness.
 
-The first release intentionally does not expose public signup, password reset, SMS/WhatsApp delivery, live maps, volunteer availability scheduling, QR, offline sync, or a multi-fest API.
+The final fest report is generated for a required local date range, uses the configured fest timezone, counts only verified collection records, and labels the current outstanding material balance as a live snapshot rather than a historical period metric. The first release intentionally does not expose public signup, password reset, SMS/WhatsApp delivery, live maps, volunteer availability scheduling, QR, offline sync, or a multi-fest API.
 
 ## 7. Authentication and security
 
