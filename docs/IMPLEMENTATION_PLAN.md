@@ -132,7 +132,8 @@ A feature is done only when requirements and permissions are documented; UI/API/
 - [x] Add password-hashed login, logout, current-session endpoint and server-side permission middleware.
 - [x] Add role assignment, administrator account creation, account suspension and session revocation.
 - [x] Protect the last active administrator from accidental removal or suspension.
-- [ ] Add broader authorization and session-expiry regression tests.
+- [x] Add middleware allow/deny and invalid/expired session regression tests.
+- [ ] Expand tests across every role/resource scope and privilege-change session behavior.
 
 ### Phase 3 — Event and location progress
 - [x] Add single-fest configuration, zones, areas, bins and waste-category management APIs.
@@ -145,7 +146,8 @@ A feature is done only when requirements and permissions are documented; UI/API/
 - [x] Add public status timeline and public/internal manager notes.
 - [x] Add private report evidence uploads with content-signature checks and authorized downloads.
 - [x] Add manager-facing report evidence review UI and public/internal note controls.
-- [ ] Add dedicated report lifecycle and tracking-token regression tests.
+- [x] Add report-note schema regression and public tracking route privacy query tests remain to be added.
+- [ ] Add complete report lifecycle and tracking-token regression tests.
 
 ### Phase 5 — Workforce and collection progress
 - [x] Add teams, memberships, cleaning rounds, collection tasks, assignments and volunteer task scoping.
@@ -157,18 +159,21 @@ A feature is done only when requirements and permissions are documented; UI/API/
 - [x] Create verified-only material batches automatically.
 - [x] Add segregation, destination and allocation APIs with database-enforced source balances.
 - [x] Add material balance views and manager-facing processing UI.
-- [ ] Add concurrent allocation regression tests and final reconciliation report.
+- [x] Add two-connection concurrent material allocation race test to CI.
+- [ ] Add date-filtered final reconciliation test with realistic fixture data.
 
 ### Phase 7 — Notifications and analytics progress
 - [x] Add in-app notifications, announcements, role/zone targeting, analytics and CSV exports.
 - [x] Add manager dashboards for reports, tasks, teams, locations, rounds and materials.
-- [ ] Add a date-scoped final fest report and metric regression tests.
+- [x] Add date-scoped final fest report API, metric definitions and printable dashboard UI.
+- [x] Add final-report date validation, timezone filter and metric contract tests.
 
 ### Phase 8 — Hardening and handover progress
 - [x] Add PostgreSQL CI service, schema verification, database smoke tests, dependency audit and production build checks.
 - [x] Resolve all npm audit findings in the locked dependency tree.
-- [ ] Add browser-level end-to-end journeys and broader role/resource authorization regression tests.
-- [ ] Run and record a real backup/restore drill; document production deployment and persistent private storage.
+- [ ] Add browser-level journeys and broader role/resource authorization regression tests.
+- [x] Verify PostgreSQL dump/restore round trip and schema/smoke/reporting checks in CI; production evidence-file backup remains an operator task.
+- [ ] Add production deployment configuration for the chosen host and persistent private storage.
 - [ ] Complete final security, privacy/retention and operational review.
 
 Do not mark a phase complete until its exit-gate evidence exists. A checked implementation item does not mean the whole phase is complete.
