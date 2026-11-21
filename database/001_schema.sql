@@ -3,7 +3,6 @@
 -- Apply: psql -v ON_ERROR_STOP=1 -U postgres -d waste_management -f database/001_schema.sql
 
 BEGIN;
-CREATE EXTENSION IF NOT EXISTS pgcrypto;
 CREATE SCHEMA IF NOT EXISTS waste_mgmt;
 SET search_path TO waste_mgmt, public;
 
