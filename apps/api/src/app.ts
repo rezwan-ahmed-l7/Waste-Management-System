@@ -2065,7 +2065,19 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
         res.status(404).json({ error: { code: "REPORT_NOT_FOUND", message: "Report not found." } });
         return;
       }
-      res.status(200).json({ data: report });
+      const [history,notes]=await Promise.all([
+        database.query(
+          "SELECT to_status AS \"status\",changed_at AS \"changedAt\" FROM waste_mgmt.report_status_history " +
+          "WHERE report_id=$1 AND is_public=TRUE ORDER BY changed_at",
+          [id.data]
+        ),
+        database.query(
+          "SELECT body,created_at AS \"createdAt\" FROM waste_mgmt.report_notes " +
+          "WHERE report_id=$1 AND visibility='public' ORDER BY created_at",
+          [id.data]
+        )
+      ]);
+      res.status(200).json({ data: { ...report, history: history.rows, notes: notes.rows } });
     } catch (error) {
       next(error);
     }
