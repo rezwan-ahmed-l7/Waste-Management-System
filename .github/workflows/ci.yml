@@ -30,6 +30,7 @@ jobs:
           node-version: 24
       - run: npm install
       - run: npm run typecheck
+      - run: npm run lint
       - run: npm test
       - name: Apply PostgreSQL schema
         run: psql -v ON_ERROR_STOP=1 "$DATABASE_URL" -f database/001_schema.sql
