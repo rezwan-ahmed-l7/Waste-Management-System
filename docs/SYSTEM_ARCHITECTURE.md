@@ -13,7 +13,7 @@ Use a **modular monolith**: one web application, one API service, one PostgreSQL
 | Web | Next.js App Router + React |
 | API | Express 5 REST API |
 | Database | PostgreSQL |
-| Data access | Prisma ORM and committed migrations |
+| Data access | Parameterized SQL via pg; reviewed SQL schema |
 | Authentication | Server-managed sessions, secure cookies |
 | Password hashing | Argon2id or vetted equivalent if platform constraints require |
 | Validation | Zod at external boundaries |
@@ -21,7 +21,7 @@ Use a **modular monolith**: one web application, one API service, one PostgreSQL
 | Quality/CI | ESLint, Prettier, TypeScript, GitHub Actions |
 | Files | Storage adapter: private local dev storage; S3-compatible private object storage in production |
 
-Exact package versions will be pinned in the lockfile during scaffold. Use one package manager and one lockfile.
+Direct dependencies are pinned to exact versions in workspace package manifests. A lockfile is still required before declaring reproducible installation complete.
 
 ## 3. Logical boundaries
 
@@ -50,7 +50,7 @@ Controllers remain thin. Domain services own business rules. Data access is isol
     packages/contracts/       Shared schemas/types if justified
     database/001_schema.sql
     database/README.md
-    prisma/seed/
+    scripts/verify-database.mjs
     docs/                     The four detailed project documents
     .github/workflows/
     .env.example
