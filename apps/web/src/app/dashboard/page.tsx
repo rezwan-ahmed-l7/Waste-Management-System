@@ -533,7 +533,7 @@ function downloadPrivateFile(path:string,fileName:string){
     const url=URL.createObjectURL(blob);
     const anchor=document.createElement("a");
     anchor.href=url;anchor.download=fileName;anchor.click();
-    URL.revokeObjectURL(url);
+    window.setTimeout(()=>URL.revokeObjectURL(url),1000);
   });
 }
 
@@ -541,14 +541,14 @@ function ReportEvidence({reportId}:{reportId:string}){
   const [files,setFiles]=useState<ReportAttachment[]>([]);
   const [error,setError]=useState("");
   useEffect(()=>{let active=true;apiRequest("/reports/"+reportId+"/attachments").then(data=>{if(active)setFiles(data);}).catch(cause=>{if(active)setError(cause instanceof Error?cause.message:"Evidence list unavailable.");});return()=>{active=false;};},[reportId]);
-  return <div className="evidenceList"><strong>Report evidence</strong>{error?<small className="error">{error}</small>:null}{files.length===0?<small className="muted">No attachments uploaded.</small>:files.map(file=><button className="linkButton" key={file.attachmentId} onClick={()=>void downloadPrivateFile("/reports/"+reportId+"/attachments/"+file.attachmentId,file.fileName)}>{file.fileName} · {(file.fileSizeBytes/1024).toFixed(0)} KB</button>)}</div>;
+  return <div className="evidenceList"><strong>Report evidence</strong>{error?<small className="error">{error}</small>:null}{files.length===0?<small className="muted">No attachments uploaded.</small>:files.map(file=><button className="linkButton" key={file.attachmentId} onClick={()=>void downloadPrivateFile("/reports/"+reportId+"/attachments/"+file.attachmentId,file.fileName).catch(()=>window.alert("Evidence download failed. Check your permission and try again."))}>{file.fileName} · {(file.fileSizeBytes/1024).toFixed(0)} KB</button>)}</div>;
 }
 
 function TaskEvidence({submissionId}:{submissionId:string}){
   const [files,setFiles]=useState<CollectionPhoto[]>([]);
   const [error,setError]=useState("");
   useEffect(()=>{let active=true;apiRequest("/collection-submissions/"+submissionId+"/photos").then(data=>{if(active)setFiles(data);}).catch(cause=>{if(active)setError(cause instanceof Error?cause.message:"Collection evidence unavailable.");});return()=>{active=false;};},[submissionId]);
-  return <div className="evidenceList"><strong>Collection evidence</strong>{error?<small className="error">{error}</small>:null}{files.length===0?<small className="muted">No evidence attached.</small>:files.map(file=><button className="linkButton" key={file.photoId} onClick={()=>void downloadPrivateFile("/collection-submissions/"+submissionId+"/photos/"+file.photoId,"collection-evidence-"+file.photoId)}>{file.mediaType} · {(file.byteSize/1024).toFixed(0)} KB</button>)}</div>;
+  return <div className="evidenceList"><strong>Collection evidence</strong>{error?<small className="error">{error}</small>:null}{files.length===0?<small className="muted">No evidence attached.</small>:files.map(file=><button className="linkButton" key={file.photoId} onClick={()=>void downloadPrivateFile("/collection-submissions/"+submissionId+"/photos/"+file.photoId,"collection-evidence-"+file.photoId).catch(()=>window.alert("Evidence download failed. Check your permission and try again."))}>{file.mediaType} · {(file.byteSize/1024).toFixed(0)} KB</button>)}</div>;
 }
 
 function ReportNoteForm({reportId,onDone}:{reportId:string;onDone:()=>void}){
