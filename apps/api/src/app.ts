@@ -1,4 +1,5 @@
 import express, { type ErrorRequestHandler } from "express";
+import multer from "multer";
 import cors from "cors";
 import helmet from "helmet";
 import { rateLimit } from "express-rate-limit";
