@@ -7,12 +7,32 @@ on:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: waste_management
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d waste_management"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/waste_management
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - run: npm install --ignore-scripts
+      - run: npm install
       - run: npm run typecheck
       - run: npm test
+      - name: Apply PostgreSQL schema
+        run: psql -v ON_ERROR_STOP=1 "$DATABASE_URL" -f database/001_schema.sql
+      - name: Verify PostgreSQL schema
+        run: npm run db:verify
       - run: npm run build
