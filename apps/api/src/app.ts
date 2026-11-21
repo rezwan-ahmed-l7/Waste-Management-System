@@ -332,16 +332,17 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
 
 
   const taskRead = [authenticate(database), requirePermission(database, "tasks.read")];
-  const taskScope = (userId: string, roles: string[]) => {
+  const taskScope = (userId: string, roles: string[], parameterIndex = 1) => {
+    const userParameter = "$" + parameterIndex;
     if (roles.some(role => ["administrator","waste_manager"].includes(role))) return { sql: "TRUE", values: [] as string[] };
     if (roles.includes("team_lead")) {
       return {
-        sql: "EXISTS (SELECT 1 FROM waste_mgmt.task_assignments ta LEFT JOIN waste_mgmt.teams tm ON tm.team_id=ta.team_id WHERE ta.task_id=t.task_id AND ta.unassigned_at IS NULL AND (ta.user_id=$1 OR tm.team_lead_user_id=$1))",
+        sql: "EXISTS (SELECT 1 FROM waste_mgmt.task_assignments ta LEFT JOIN waste_mgmt.teams tm ON tm.team_id=ta.team_id WHERE ta.task_id=t.task_id AND ta.unassigned_at IS NULL AND (ta.user_id=" + userParameter + " OR tm.team_lead_user_id=" + userParameter + "))",
         values: [userId]
       };
     }
     return {
-      sql: "EXISTS (SELECT 1 FROM waste_mgmt.task_assignments ta LEFT JOIN waste_mgmt.team_memberships tm ON tm.team_id=ta.team_id AND tm.user_id=$1 AND tm.ends_at IS NULL WHERE ta.task_id=t.task_id AND ta.unassigned_at IS NULL AND (ta.user_id=$1 OR tm.user_id=$1))",
+      sql: "EXISTS (SELECT 1 FROM waste_mgmt.task_assignments ta LEFT JOIN waste_mgmt.team_memberships tm ON tm.team_id=ta.team_id AND tm.user_id=" + userParameter + " AND tm.ends_at IS NULL AND tm.starts_at<=now() WHERE ta.task_id=t.task_id AND ta.unassigned_at IS NULL AND (ta.user_id=" + userParameter + " OR tm.user_id=" + userParameter + "))",
       values: [userId]
     };
   };
@@ -392,7 +393,7 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
       return;
     }
     try {
-      const scope = taskScope(req.auth.userId, req.auth.roles);
+      const scope = taskScope(req.auth.userId, req.auth.roles, 2);
       const result = await database.query(
         "SELECT t.task_id AS \"taskId\", t.title, t.instructions, t.priority, t.status, t.due_at AS \"dueAt\", " +
         "t.created_at AS \"createdAt\", t.started_at AS \"startedAt\", t.completed_at AS \"completedAt\", " +
