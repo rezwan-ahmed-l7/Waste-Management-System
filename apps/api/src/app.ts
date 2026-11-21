@@ -496,6 +496,7 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
       const client=await database.connect();
       try{
         await client.query("BEGIN");
+        if(req.auth)await client.query("SELECT set_config('app.actor_user_id',$1,true)",[req.auth.userId]);
         const roles=await client.query("SELECT role_id FROM waste_mgmt.roles WHERE role_id=ANY($1::smallint[])",[body.data.roleIds]);
         if(roles.rowCount!==new Set(body.data.roleIds).size){
           await client.query("ROLLBACK");
@@ -576,6 +577,7 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
       const client=await database.connect();
       try{
         await client.query("BEGIN");
+        await client.query("SELECT set_config('app.actor_user_id',$1,true)",[auth.userId]);
         const roleRows=await client.query("SELECT role_id,role_key FROM waste_mgmt.roles WHERE role_id=ANY($1::smallint[])",[body.data.roleIds]);
         if(roleRows.rowCount!==new Set(body.data.roleIds).size){
           await client.query("ROLLBACK");
