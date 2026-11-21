@@ -89,3 +89,36 @@ describe("report note persistence", () => {
     expect(fake.client.release).toHaveBeenCalledOnce();
   });
 });
+
+
+describe("anonymous report tracking privacy", () => {
+  it("returns only public history and public notes for a valid tracking token", async () => {
+    const statements: string[] = [];
+    const query = vi.fn(async (sql: string) => {
+      statements.push(sql);
+      if (sql.includes("JOIN waste_mgmt.report_tracking_tokens")) {
+        return { rows: [{ report_id: reportId, status: "in_progress", submitted_at: "2026-11-21T00:00:00.000Z", updated_at: "2026-11-21T01:00:00.000Z" }], rowCount: 1 };
+      }
+      if (sql.includes("report_status_history")) return { rows: [{ status: "in_progress", changedAt: "2026-11-21T01:00:00.000Z" }], rowCount: 1 };
+      if (sql.includes("report_notes")) return { rows: [{ body: "Cleaning team assigned.", createdAt: "2026-11-21T01:00:00.000Z" }], rowCount: 1 };
+      return { rows: [], rowCount: 0 };
+    });
+    const response = await request(createApp({ query, connect: vi.fn() } as never))
+      .get("/api/v1/public/reports/" + reportId + "/status")
+      .set("x-report-tracking-token", "t".repeat(43));
+    expect(response.status).toBe(200);
+    expect(response.body.data.notes).toEqual([{ body: "Cleaning team assigned.", createdAt: "2026-11-21T01:00:00.000Z" }]);
+    expect(statements.some(sql => sql.includes("is_public=TRUE"))).toBe(true);
+    expect(statements.some(sql => sql.includes("visibility='public'"))).toBe(true);
+    expect(JSON.stringify(response.body)).not.toMatch(/reporterName|reporterContact|author|internal/i);
+  });
+
+  it("does not query the database when the tracking token is malformed", async () => {
+    const query = vi.fn(async () => ({ rows: [], rowCount: 0 }));
+    const response = await request(createApp({ query, connect: vi.fn() } as never))
+      .get("/api/v1/public/reports/" + reportId + "/status")
+      .set("x-report-tracking-token", "short");
+    expect(response.status).toBe(404);
+    expect(query).not.toHaveBeenCalled();
+  });
+});
