@@ -112,7 +112,7 @@ A feature is done only when requirements and permissions are documented; UI/API/
 - [x] Inspect repository and default branch.
 - [x] Create isolated documentation branch.
 - [x] Add five-document baseline (README plus four docs).
-- [ ] Cross-document consistency and link verification.
+- [x] Cross-document consistency and internal documentation links verified.
 - [ ] Confirm stakeholder decisions required before implementation.
 - [ ] Pass Phase 0 exit gate.
 
