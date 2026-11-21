@@ -1295,6 +1295,7 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
           res.status(422).json({ error: { code: "INVALID_AREA", message: "The selected area is not active." } });
           return;
         }
+        let linkedReportStatus: string | null = null;
         if (body.data.reportId) {
           const report = await client.query(
             "SELECT report_id,status,area_id FROM waste_mgmt.waste_reports WHERE report_id=$1 AND fest_id=1 FOR UPDATE",
@@ -1306,6 +1307,7 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
             res.status(409).json({ error: { code: "REPORT_NOT_ACTIONABLE", message: "Only an accepted report in the same area can create a primary collection task." } });
             return;
           }
+          linkedReportStatus = row.status;
         }
         if (body.data.reportId) {
           const activeLink = await client.query(
@@ -1350,7 +1352,7 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
             "INSERT INTO waste_mgmt.report_task_links(report_id,task_id,link_type,linked_by) VALUES ($1,$2,'primary',$3)",
             [body.data.reportId,task.taskId,auth.userId]
           );
-          if (row.status === "accepted") {
+          if (linkedReportStatus === "accepted") {
             await client.query(
               "UPDATE waste_mgmt.waste_reports SET status='in_progress' WHERE report_id=$1",
               [body.data.reportId]
