@@ -17,6 +17,7 @@ type Database = Pick<Pool, "query" | "connect">;
 export function createApp(database: Database, verifyPassword: (hash: string, password: string) => Promise<boolean> = argon2.verify) {
   const app = express();
   app.disable("x-powered-by");
+  app.set("trust proxy", env.TRUST_PROXY_HOPS);
   app.use((_req, res, next) => {
     const requestId = randomUUID();
     res.setHeader("x-request-id", requestId);
