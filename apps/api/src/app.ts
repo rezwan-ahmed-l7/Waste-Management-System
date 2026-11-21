@@ -13,6 +13,31 @@ import { authenticate, readSessionToken, requirePermission } from "./auth.js";
 import { privateUpload, storePrivateUpload, readPrivateUpload, removePrivateUpload, UnsupportedUploadError } from "./storage.js";
 
 type Database = Pick<Pool, "query" | "connect">;
+type DatabaseClient = Awaited<ReturnType<Database["connect"]>>;
+
+async function auditedMutation<T>(
+  database: Database,
+  req: express.Request,
+  res: express.Response,
+  action: (client: DatabaseClient) => Promise<T>
+): Promise<T> {
+  const client = await database.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      "SELECT set_config('app.actor_user_id',$1,true),set_config('app.request_id',$2,true)",
+      [req.auth?.userId ?? "", res.locals.requestId]
+    );
+    const result = await action(client);
+    await client.query("COMMIT");
+    return result;
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
 
 export function createApp(database: Database, verifyPassword: (hash: string, password: string) => Promise<boolean> = argon2.verify) {
   const app = express();
@@ -862,10 +887,10 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
     const body=z.object({code:z.string().trim().min(2).max(40).regex(/^[A-Za-z0-9_-]+$/),name:z.string().trim().min(2).max(100),description:z.string().trim().max(1000).optional()}).strict().safeParse(req.body);
     if(!body.success){res.status(400).json({error:{code:"VALIDATION_ERROR",message:"Invalid zone details."}});return;}
     try{
-      const result=await database.query(
+      const result=await auditedMutation(database,req,res,client=>client.query(
         "INSERT INTO waste_mgmt.zones(fest_id,code,name,description) VALUES (1,$1,$2,$3) RETURNING zone_id AS \"zoneId\",code,name",
         [body.data.code.toUpperCase(),body.data.name,body.data.description??null]
-      );
+      ));
       res.status(201).json({data:result.rows[0]});
     }catch(error){next(error);}
   });
@@ -880,10 +905,10 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
         const parent=await database.query("SELECT area_id FROM waste_mgmt.areas WHERE area_id=$1 AND zone_id=$2 AND is_active=TRUE",[body.data.parentAreaId,body.data.zoneId]);
         if(parent.rowCount!==1){res.status(422).json({error:{code:"INVALID_PARENT_AREA",message:"Parent area must be active and belong to the selected zone."}});return;}
       }
-      const result=await database.query(
+      const result=await auditedMutation(database,req,res,client=>client.query(
         "INSERT INTO waste_mgmt.areas(fest_id,zone_id,parent_area_id,code,name,description) VALUES (1,$1,$2,$3,$4,$5) RETURNING area_id AS \"areaId\",zone_id AS \"zoneId\",code,name",
         [body.data.zoneId,body.data.parentAreaId??null,body.data.code.toUpperCase(),body.data.name,body.data.description??null]
-      );
+      ));
       res.status(201).json({data:result.rows[0]});
     }catch(error){next(error);}
   });
@@ -898,10 +923,10 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
         const category=await database.query("SELECT category_id FROM waste_mgmt.waste_categories WHERE category_id=$1 AND is_active=TRUE",[body.data.categoryId]);
         if(category.rowCount!==1){res.status(422).json({error:{code:"INVALID_CATEGORY",message:"The selected waste category is not active."}});return;}
       }
-      const result=await database.query(
+      const result=await auditedMutation(database,req,res,client=>client.query(
         "INSERT INTO waste_mgmt.bins(fest_id,area_id,code,category_id,capacity_kg) VALUES (1,$1,$2,$3,$4) RETURNING bin_id AS \"binId\",area_id AS \"areaId\",code,capacity_kg AS \"capacityKg\"",
         [body.data.areaId,body.data.code.toUpperCase(),body.data.categoryId??null,body.data.capacityKg??null]
-      );
+      ));
       res.status(201).json({data:result.rows[0]});
     }catch(error){next(error);}
   });
@@ -910,10 +935,10 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
     const body=z.object({code:z.string().trim().min(2).max(40).regex(/^[A-Za-z0-9_-]+$/),name:z.string().trim().min(2).max(80),description:z.string().trim().max(1000).optional(),isRecyclable:z.boolean().default(false)}).strict().safeParse(req.body);
     if(!body.success){res.status(400).json({error:{code:"VALIDATION_ERROR",message:"Invalid waste category details."}});return;}
     try{
-      const result=await database.query(
+      const result=await auditedMutation(database,req,res,client=>client.query(
         "INSERT INTO waste_mgmt.waste_categories(code,name,description,is_recyclable) VALUES ($1,$2,$3,$4) RETURNING category_id AS \"categoryId\",code,name,is_recyclable AS \"isRecyclable\"",
         [body.data.code.toLowerCase(),body.data.name,body.data.description??null,body.data.isRecyclable]
-      );
+      ));
       res.status(201).json({data:result.rows[0]});
     }catch(error){next(error);}
   });
@@ -978,7 +1003,7 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
     const body=z.object({isActive:z.boolean()}).strict().safeParse(req.body);
     if(!id.success||!body.success){res.status(400).json({error:{code:"VALIDATION_ERROR",message:"Invalid bin status update."}});return;}
     try{
-      const result=await database.query("UPDATE waste_mgmt.bins SET is_active=$1 WHERE bin_id=$2 AND fest_id=1 RETURNING bin_id AS \"binId\",is_active AS \"isActive\"",[body.data.isActive,id.data]);
+      const result=await auditedMutation(database,req,res,client=>client.query("UPDATE waste_mgmt.bins SET is_active=$1 WHERE bin_id=$2 AND fest_id=1 RETURNING bin_id AS \"binId\",is_active AS \"isActive\"",[body.data.isActive,id.data]));
       if(!result.rows[0]){res.status(404).json({error:{code:"BIN_NOT_FOUND",message:"Bin not found."}});return;}
       res.status(200).json({data:result.rows[0]});
     }catch(error){next(error);}
@@ -989,7 +1014,7 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
     const body=z.object({isActive:z.boolean()}).strict().safeParse(req.body);
     if(!id.success||!body.success){res.status(400).json({error:{code:"VALIDATION_ERROR",message:"Invalid category status update."}});return;}
     try{
-      const result=await database.query("UPDATE waste_mgmt.waste_categories SET is_active=$1 WHERE category_id=$2 RETURNING category_id AS \"categoryId\",is_active AS \"isActive\"",[body.data.isActive,id.data]);
+      const result=await auditedMutation(database,req,res,client=>client.query("UPDATE waste_mgmt.waste_categories SET is_active=$1 WHERE category_id=$2 RETURNING category_id AS \"categoryId\",is_active AS \"isActive\"",[body.data.isActive,id.data]));
       if(!result.rows[0]){res.status(404).json({error:{code:"CATEGORY_NOT_FOUND",message:"Waste category not found."}});return;}
       res.status(200).json({data:result.rows[0]});
     }catch(error){next(error);}
