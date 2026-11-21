@@ -126,3 +126,13 @@ h1 { max-width: 720px; margin: 14px 0 18px; font-size: clamp(38px, 6vw, 64px); l
 .inventoryLine span { color:var(--muted); text-align:right; }
 .inventoryLine.nested { padding-left:18px; }
 @media(max-width:760px){.locationForms,.locationInventory{grid-template-columns:1fr}}
+
+.userCreateForm { margin-bottom:18px; box-shadow:none; }
+.userCreateForm input { width:100%; padding:11px; border:1px solid var(--line); border-radius:8px; }
+.roleCheckboxes { display:flex; flex-wrap:wrap; gap:10px 16px; }
+.roleCheckboxes label { display:flex; align-items:center; gap:6px; font-size:12px; }
+.roleCheckboxes input { width:auto; }
+.userRow { display:flex; justify-content:space-between; align-items:center; gap:18px; }
+.userRow .roleList { margin:8px 0 0; }
+.userActions { display:flex; align-items:center; gap:10px; }
+@media(max-width:760px){.userRow{align-items:flex-start;flex-direction:column}.userActions{width:100%;justify-content:space-between}}
