@@ -43,7 +43,7 @@ describe("audited mutation transaction helper", () => {
     expect(context).toBeGreaterThan(begin);
     expect(insert).toBeGreaterThan(context);
     expect(commit).toBeGreaterThan(insert);
-    expect(calls[context].values).toEqual([userId, expect.any(String)]);
+    expect(calls[context]?.values).toEqual([userId, expect.any(String)]);
     expect(fake.client.release).toHaveBeenCalledOnce();
   });
 
