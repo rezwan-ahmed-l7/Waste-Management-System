@@ -562,6 +562,10 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
       res.status(400).json({ error: { code: "VALIDATION_ERROR", message: "Invalid collection submission." } });
       return;
     }
+    if (body.data.records.some(record => record.enteredUnit === "g" && !Number.isInteger(record.enteredWeight))) {
+      res.status(422).json({ error: { code: "INVALID_WEIGHT_PRECISION", message: "Gram measurements must be whole numbers; kilogram measurements may use up to three decimal places." } });
+      return;
+    }
     try {
       const client = await database.connect();
       try {
@@ -590,6 +594,15 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
         const submissionId = inserted.rows[0]?.submissionId;
         if (!submissionId) throw new Error("Collection submission could not be created.");
         for (const record of body.data.records) {
+          const category = await client.query(
+            "SELECT category_id FROM waste_mgmt.waste_categories WHERE category_id=$1 AND is_active=TRUE",
+            [record.categoryId]
+          );
+          if (category.rowCount !== 1) {
+            await client.query("ROLLBACK");
+            res.status(422).json({ error: { code: "INVALID_CATEGORY", message: "A submitted waste category is not active." } });
+            return;
+          }
           const weightKg = record.enteredUnit === "kg" ? record.enteredWeight : record.enteredWeight / 1000;
           await client.query(
             "INSERT INTO waste_mgmt.collection_records(submission_id,category_id,entered_weight,entered_unit,weight_kg,measurement_method,notes) " +
