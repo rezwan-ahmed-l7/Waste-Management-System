@@ -4,11 +4,12 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_DB: waste_management
-      POSTGRES_USER: waste_app
+      POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.production}
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./database/001_schema.sql:/docker-entrypoint-initdb.d/001_schema.sql:ro
+      - ./database/002_grants.sh:/docker-entrypoint-initdb.d/002_grants.sh:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U waste_app -d waste_management"]
       interval: 10s
@@ -28,7 +29,8 @@ services:
       NODE_ENV: production
       API_HOST: 0.0.0.0
       API_PORT: 4000
-      DATABASE_URL: postgresql://waste_app:${POSTGRES_PASSWORD}@db:5432/waste_management
+      DATABASE_URL: postgresql://waste_app:${APP_DB_PASSWORD}@db:5432/waste_management
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?Set APP_DB_PASSWORD in .env.production}
       WEB_ORIGIN: https://${DOMAIN}
       PRIVATE_STORAGE_DIR: /data/private
       BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:-}
