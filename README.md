@@ -47,6 +47,20 @@ Prerequisites: Node.js 24.x, npm, Git, and PostgreSQL 15+. Run `npm ci`, copy `.
 
 Never commit real credentials, session secrets, database passwords, or private user-uploaded files. Only placeholder values belong in .env.example.
 
+## Production deployment starter
+
+A Docker Compose deployment is provided for a single Linux host with a DNS name. It runs PostgreSQL 16, the API, Next.js web app, private evidence volume, and Caddy-managed HTTPS.
+
+1. Point the chosen domain's DNS A/AAAA records at the host and allow inbound TCP 80/443.
+2. Copy `.env.production.example` to `.env.production`. Set a long random URL-safe database password and a unique bootstrap administrator password; never commit this file.
+3. Validate configuration: `docker compose --env-file .env.production config --quiet`.
+4. Start: `docker compose --env-file .env.production up -d --build`. On a fresh PostgreSQL volume, the schema is initialized from `database/001_schema.sql`.
+5. Create the first administrator once: `docker compose --env-file .env.production exec api npm run bootstrap:admin --workspace @waste/api`.
+6. Remove `BOOTSTRAP_ADMIN_PASSWORD` (and the email if desired) from `.env.production`, then restart the API: `docker compose --env-file .env.production up -d api`.
+7. Verify `https://DOMAIN/api/v1/ready`, sign in, configure fest dates/timezone, locations, categories, roles, teams and real processing destinations.
+
+The API and web containers are not published directly; Caddy terminates HTTPS and proxies `/api/*` to the API. PostgreSQL data and private evidence use separate persistent volumes. Use a URL-safe password for the interpolated database URL. This is a single-host deployment starter, not a substitute for host hardening, firewall policy, monitoring, off-host encrypted backups, or a production restore drill. The schema SQL is an initial-database bootstrap; existing volumes require reviewed forward migrations, never rerun the bootstrap script blindly.
+
 ## Engineering principles
 - A screen is not a completed feature; the full business workflow must work.
 - Server-side authorization is mandatory; hiding a button is not security.
