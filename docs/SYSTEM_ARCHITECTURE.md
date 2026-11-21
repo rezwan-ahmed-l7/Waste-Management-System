@@ -114,7 +114,7 @@ The final fest report is generated for a required local date range, uses the con
 - Validate every request field and uploaded file; encode untrusted output.
 - Image uploads: allowlisted formats, inspect actual content type, enforce byte/dimension limits, server-generated names, private non-executable storage.
 - Evidence access is authorized; do not expose permanent public file URLs.
-- Use least-privilege database credentials and separate dev/test/prod secrets.
+- Use least-privilege database credentials and separate dev/test/prod secrets. The Compose deployment provisions a non-superuser `waste_app` role for runtime queries; the PostgreSQL superuser is limited to initialization and backup.
 - Audit privileged actions without logging credentials, tokens, or sensitive payloads.
 - Enable dependency and secret scanning in CI where available.
 
@@ -130,7 +130,7 @@ Application code uses a storage adapter, not provider-specific calls. Developmen
 
 ## 10. Configuration and operations
 
-Validate environment variables at startup and fail fast with safe messages. Commit .env.example only with placeholders. Current config includes DATABASE_URL, API_HOST/API_PORT, WEB_ORIGIN, NEXT_PUBLIC_API_BASE_URL, PRIVATE_STORAGE_DIR and public-report rate limits. Session tokens are random and stored only as hashes; no static session secret is required. The Docker Compose starter is a single-host Caddy/PostgreSQL deployment template. Production must not silently fall back to insecure auth or public storage.
+Validate environment variables at startup and fail fast with safe messages. Commit .env.example only with placeholders. Current config includes DATABASE_URL, API_HOST/API_PORT, WEB_ORIGIN, NEXT_PUBLIC_API_BASE_URL, PRIVATE_STORAGE_DIR and public-report rate limits. Session tokens are random and stored only as hashes; no static session secret is required. The Docker Compose starter is a single-host Caddy/PostgreSQL deployment template; API and web processes run as non-root UID 1000, and an init container prepares the private evidence volume. Production must not silently fall back to insecure auth or public storage.
 
 Use structured logs with request IDs; health and readiness endpoints; avoid logging report text, personal details, cookies, secrets, or file content. Document backup/restore and test restore before production.
 
