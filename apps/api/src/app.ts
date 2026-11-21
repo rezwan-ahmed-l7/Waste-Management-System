@@ -182,7 +182,7 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
       const pageValues = [...values, filters.data.pageSize, offset];
       const result = await database.query(
         "SELECT r.report_id AS \"reportId\", r.status, r.priority, r.is_anonymous AS \"isAnonymous\", " +
-        "r.submitted_at AS \"submittedAt\", r.updated_at AS \"updatedAt\", r.description, " +
+        "r.submitted_at AS \"submittedAt\", r.updated_at AS \"updatedAt\", r.description, a.area_id AS \"areaId\", " +
         "a.name AS \"areaName\", z.name AS \"zoneName\", wc.name AS \"categoryName\" " +
         "FROM waste_mgmt.waste_reports r " +
         "JOIN waste_mgmt.areas a ON a.area_id=r.area_id " +
