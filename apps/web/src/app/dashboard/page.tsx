@@ -295,6 +295,105 @@ function UserAdmin({users,roles,onDone}:{users:AdminUser[];roles:Role[];onDone:(
   </section>;
 }
 
+
+type MaterialOverview = {
+  batches:{batchId:string;availableWeightKg:number;remainingWeightKg:number;sourceCategory:string;sourceWeightKg:number;taskId:string}[];
+  segregations:{segregationId:string;sourceBatchId:string;producedWeightKg:number;remainingWeightKg:number;outputCategory:string}[];
+  destinations:{destinationId:string;destinationType:string;name:string;contactInfo:string|null}[];
+  allocations:{allocationId:string;weightKg:number;destination:string;destinationType:string;allocatedAt:string}[];
+};
+type CleaningRound = {roundId:string;title:string;status:string;plannedStartAt:string;plannedEndAt:string;areaName:string;zoneName:string;taskCount:number};
+
+function MaterialManager({data,categories,onDone}:{data:MaterialOverview;categories:Category[];onDone:()=>void}){
+  const [destinationType,setDestinationType]=useState("recycling");const [destinationName,setDestinationName]=useState("");const [contact,setContact]=useState("");
+  const [batchId,setBatchId]=useState("");const [outputCategoryId,setOutputCategoryId]=useState(String(categories[0]?.categoryId??""));const [segregationWeight,setSegregationWeight]=useState("");
+  const [sourceType,setSourceType]=useState<"batch"|"segregation">("batch");const [sourceId,setSourceId]=useState("");const [destinationId,setDestinationId]=useState("");const [allocationWeight,setAllocationWeight]=useState("");
+  const [error,setError]=useState("");const [saving,setSaving]=useState(false);
+  const sources=sourceType==="batch"?data.batches.filter(x=>Number(x.remainingWeightKg)>0).map(x=>({id:x.batchId,label:x.sourceCategory+" · "+Number(x.remainingWeightKg).toFixed(3)+" kg"})):data.segregations.filter(x=>Number(x.remainingWeightKg)>0).map(x=>({id:x.segregationId,label:x.outputCategory+" · "+Number(x.remainingWeightKg).toFixed(3)+" kg"}));
+  async function run(path:string,body:unknown){
+    setSaving(true);setError("");
+    try{await apiRequest(path,{method:"POST",body:JSON.stringify(body)});onDone();}
+    catch(cause){setError(cause instanceof Error?cause.message:"Material operation failed.");}
+    finally{setSaving(false);}
+  }
+  return <section className="workspaceSection">
+    <div className="sectionHeading"><div><div className="eyebrow">Material lifecycle</div><h2>Segregation & processing</h2></div></div>
+    <div className="materialForms">
+      <form className="formCard" onSubmit={event=>{event.preventDefault();void run("/materials/destinations",{destinationType,name:destinationName,contactInfo:contact});setDestinationName("");setContact("");}}>
+        <h3>Add destination</h3>
+        <select value={destinationType} onChange={e=>setDestinationType(e.target.value)}><option value="recycling">Recycling</option><option value="disposal">Disposal</option><option value="composting">Composting</option><option value="reuse">Reuse</option></select>
+        <input required value={destinationName} onChange={e=>setDestinationName(e.target.value)} placeholder="Facility or destination name"/>
+        <input value={contact} onChange={e=>setContact(e.target.value)} placeholder="Contact details (optional)"/>
+        <button className="secondaryButton" disabled={saving}>Add destination</button>
+      </form>
+      <form className="formCard" onSubmit={event=>{event.preventDefault();void run("/materials/batches/"+batchId+"/segregations",{outputCategoryId:Number(outputCategoryId),weightKg:Number(segregationWeight)});setSegregationWeight("");}}>
+        <h3>Segregate a verified batch</h3>
+        <select required value={batchId} onChange={e=>setBatchId(e.target.value)}><option value="">Choose source batch</option>{data.batches.filter(x=>Number(x.remainingWeightKg)>0).map(x=><option key={x.batchId} value={x.batchId}>{x.sourceCategory} · {Number(x.remainingWeightKg).toFixed(3)} kg available</option>)}</select>
+        <select required value={outputCategoryId} onChange={e=>setOutputCategoryId(e.target.value)}>{categories.map(c=><option key={c.categoryId} value={c.categoryId}>{c.name}</option>)}</select>
+        <input type="number" min="0.001" step="0.001" required value={segregationWeight} onChange={e=>setSegregationWeight(e.target.value)} placeholder="Segregated weight (kg)"/>
+        <button className="secondaryButton" disabled={saving || !batchId}>Record segregation</button>
+      </form>
+      <form className="formCard" onSubmit={event=>{event.preventDefault();void run("/materials/allocations",{...(sourceType==="batch"?{sourceBatchId:sourceId}:{sourceSegregationId:sourceId}),destinationId,weightKg:Number(allocationWeight)});setAllocationWeight("");}}>
+        <h3>Allocate material</h3>
+        <select value={sourceType} onChange={e=>{setSourceType(e.target.value as "batch"|"segregation");setSourceId("");}}><option value="batch">Original batch</option><option value="segregation">Segregated material</option></select>
+        <select required value={sourceId} onChange={e=>setSourceId(e.target.value)}><option value="">Choose material source</option>{sources.map(x=><option key={x.id} value={x.id}>{x.label}</option>)}</select>
+        <select required value={destinationId} onChange={e=>setDestinationId(e.target.value)}><option value="">Choose destination</option>{data.destinations.map(x=><option key={x.destinationId} value={x.destinationId}>{x.name} · {x.destinationType}</option>)}</select>
+        <input type="number" min="0.001" step="0.001" required value={allocationWeight} onChange={e=>setAllocationWeight(e.target.value)} placeholder="Allocated weight (kg)"/>
+        <button className="secondaryButton" disabled={saving || !sourceId || !destinationId}>Record allocation</button>
+      </form>
+    </div>
+    {error?<p className="error">{error}</p>:null}
+    <div className="locationInventory">
+      <article className="panel"><h3>Available source batches</h3>{data.batches.length===0?<p className="muted">No verified collection batches yet.</p>:data.batches.map(x=><div className="inventoryLine" key={x.batchId}><strong>{x.sourceCategory}</strong><span>{Number(x.remainingWeightKg).toFixed(3)} kg remaining</span></div>)}</article>
+      <article className="panel"><h3>Segregated material</h3>{data.segregations.length===0?<p className="muted">No segregation records yet.</p>:data.segregations.map(x=><div className="inventoryLine" key={x.segregationId}><strong>{x.outputCategory}</strong><span>{Number(x.remainingWeightKg).toFixed(3)} kg remaining</span></div>)}</article>
+    </div>
+    <article className="panel"><h3>Recent allocations</h3>{data.allocations.length===0?<p className="muted">No downstream allocations yet.</p>:data.allocations.map(x=><div className="inventoryLine" key={x.allocationId}><strong>{x.destination}</strong><span>{Number(x.weightKg).toFixed(3)} kg · {x.destinationType}</span></div>)}</article>
+  </section>;
+}
+
+function RoundManager({rounds,areas,onDone}:{rounds:CleaningRound[];areas:LocationData["areas"];onDone:()=>void}){
+  const [areaId,setAreaId]=useState("");const [title,setTitle]=useState("");const [start,setStart]=useState("");const [end,setEnd]=useState("");const [error,setError]=useState("");const [saving,setSaving]=useState(false);
+  async function create(event:FormEvent<HTMLFormElement>){
+    event.preventDefault();setSaving(true);setError("");
+    try{await apiRequest("/cleaning-rounds",{method:"POST",body:JSON.stringify({areaId,title,plannedStartAt:new Date(start).toISOString(),plannedEndAt:new Date(end).toISOString()})});setTitle("");onDone();}
+    catch(cause){setError(cause instanceof Error?cause.message:"Round creation failed.");}
+    finally{setSaving(false);}
+  }
+  async function updateStatus(round:CleaningRound,status:string){
+    try{await apiRequest("/cleaning-rounds/"+round.roundId+"/status",{method:"PATCH",body:JSON.stringify({status})});onDone();}
+    catch(cause){setError(cause instanceof Error?cause.message:"Round update failed.");}
+  }
+  async function addTask(round:CleaningRound){
+    const taskTitle=window.prompt("New collection task title");
+    if(!taskTitle?.trim())return;
+    try{await apiRequest("/cleaning-rounds/"+round.roundId+"/tasks",{method:"POST",body:JSON.stringify({title:taskTitle.trim()})});onDone();}
+    catch(cause){setError(cause instanceof Error?cause.message:"Task creation failed.");}
+  }
+  return <section className="workspaceSection">
+    <div className="sectionHeading"><div><div className="eyebrow">Scheduled operations</div><h2>Cleaning rounds</h2></div><span className="countPill">{rounds.length}</span></div>
+    <form className="formCard roundForm" onSubmit={create}>
+      <h3>Schedule a cleaning round</h3>
+      <select required value={areaId} onChange={e=>setAreaId(e.target.value)}><option value="">Choose area</option>{areas.filter(x=>x.isActive).map(x=><option key={x.areaId} value={x.areaId}>{x.name}</option>)}</select>
+      <input required minLength={3} maxLength={160} value={title} onChange={e=>setTitle(e.target.value)} placeholder="Round title"/>
+      <label>Start time<input type="datetime-local" required value={start} onChange={e=>setStart(e.target.value)}/></label>
+      <label>End time<input type="datetime-local" required value={end} onChange={e=>setEnd(e.target.value)}/></label>
+      {error?<p className="error">{error}</p>:null}
+      <button className="primaryButton" disabled={saving || !areaId}>{saving?"Scheduling…":"Schedule round"}</button>
+    </form>
+    {rounds.map(round=><article className="workCard" key={round.roundId}>
+      <div className="workCardTop"><strong>{round.title}</strong><span className={"statusPill status-"+round.status}>{round.status}</span></div>
+      <p className="muted">{round.zoneName} · {round.areaName} · {round.taskCount} tasks</p>
+      <small className="muted">{new Date(round.plannedStartAt).toLocaleString()} – {new Date(round.plannedEndAt).toLocaleString()}</small>
+      <div className="buttonRow">
+        {round.status==="draft"?<button className="secondaryButton" onClick={()=>void updateStatus(round,"scheduled")}>Schedule</button>:null}
+        {round.status==="scheduled"?<button className="secondaryButton" onClick={()=>void updateStatus(round,"active")}>Start round</button>:null}
+        {round.status==="active"?<><button className="primaryButton" onClick={()=>void addTask(round)}>Add collection task</button><button className="secondaryButton" onClick={()=>void updateStatus(round,"completed")}>Complete round</button></>:null}
+        {!["completed","cancelled"].includes(round.status)?<button className="dangerButton" onClick={()=>void updateStatus(round,"cancelled")}>Cancel round</button>:null}
+      </div>
+    </article>)}
+  </section>;
+}
+
 export default function DashboardPage() {
   const router = useRouter();
   const [user,setUser] = useState<CurrentUser | null>(null);
@@ -308,7 +407,7 @@ export default function DashboardPage() {
   const [analytics,setAnalytics] = useState<Analytics | null>(null);
   const [locations,setLocations] = useState<LocationData>({zones:[],areas:[],bins:[]});
   const [adminUsers,setAdminUsers] = useState<AdminUser[]>([]);
-  const [roles,setRoles] = useState<Role[]>([]);
+  const [roles,setRoles] = useState<Role[]>([]);\n  const [materials,setMaterials] = useState<MaterialOverview>({batches:[],segregations:[],destinations:[],allocations:[]});\n  const [rounds,setRounds] = useState<CleaningRound[]>([]);
   const [error,setError] = useState("");
   const [loading,setLoading] = useState(true);
   const [workingId,setWorkingId] = useState("");
@@ -321,7 +420,7 @@ export default function DashboardPage() {
     const canWork = current.roles.some(role=>["administrator","waste_manager","team_lead","volunteer"].includes(role));
     const canManage = current.roles.some(role=>["administrator","waste_manager"].includes(role));
     const canSeeAnalytics = current.roles.some(role=>["administrator","waste_manager","fest_organizer"].includes(role));
-    const [reportPayload,taskPayload,optionsPayload,userPayload,teamPayload,notificationPayload,announcementPayload,analyticsPayload,locationPayload,adminUserPayload,rolePayload] = await Promise.all([
+    const [reportPayload,taskPayload,optionsPayload,userPayload,teamPayload,notificationPayload,announcementPayload,analyticsPayload,locationPayload,adminUserPayload,rolePayload,materialPayload,roundPayload] = await Promise.all([
       isManager ? apiRequest("/reports?pageSize=30") : Promise.resolve([]),
       canWork ? apiRequest("/tasks?pageSize=30") : Promise.resolve([]),
       canWork ? apiRequest("/public/form-options") : Promise.resolve({categories:[]}),
@@ -344,7 +443,7 @@ export default function DashboardPage() {
     setAnalytics(analyticsPayload ?? null);
     setLocations(locationPayload ?? {zones:[],areas:[],bins:[]});
     setAdminUsers(adminUserPayload ?? []);
-    setRoles(rolePayload ?? []);
+    setRoles(rolePayload ?? []);\n    setMaterials(materialPayload ?? {batches:[],segregations:[],destinations:[],allocations:[]});\n    setRounds(roundPayload ?? []);
   },[]);
 
   useEffect(() => {
@@ -416,7 +515,7 @@ export default function DashboardPage() {
         {error ? <p className="error" role="alert">{error}</p> : null}
 
 
-        {user.roles.includes("administrator") ? <UserAdmin users={adminUsers} roles={roles} onDone={()=>void loadData()} /> : null}
+        {user.roles.includes("administrator") ? <UserAdmin users={adminUsers} roles={roles} onDone={()=>void loadData()} /> : null}\n        {canManageTasks ? <RoundManager rounds={rounds} areas={locations.areas} onDone={()=>void loadData()} /> : null}\n        {canManageTasks ? <MaterialManager data={materials} categories={categories} onDone={()=>void loadData()} /> : null}
         {canManageTasks ? <LocationManager locations={locations} categories={categories} onDone={()=>void loadData()} /> : null}
 
         {analytics ? <section className="workspaceSection">
