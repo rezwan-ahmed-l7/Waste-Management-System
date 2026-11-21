@@ -493,6 +493,66 @@ CREATE TRIGGER trg_material_allocation_balance
 BEFORE INSERT OR UPDATE ON material_allocations
 FOR EACH ROW EXECUTE FUNCTION enforce_material_allocation_balance();
 
+
+-- A task cannot be verified without a verified collection submission unless
+-- an authorized manager explicitly records a no-waste/false-alarm reason.
+CREATE FUNCTION validate_task_verification() RETURNS TRIGGER LANGUAGE plpgsql AS $
+BEGIN
+  IF NEW.status='verified' AND OLD.status IS DISTINCT FROM 'verified' THEN
+    IF NOT EXISTS (
+      SELECT 1 FROM collection_submissions cs
+      WHERE cs.task_id=NEW.task_id AND cs.status='verified'
+    ) AND NULLIF(btrim(NEW.closure_reason),'') IS NULL THEN
+      RAISE EXCEPTION 'Task verification requires verified evidence or an explicit no-waste closure reason';
+    END IF;
+    NEW.completed_at := COALESCE(NEW.completed_at, now());
+  END IF;
+  RETURN NEW;
+END; $;
+CREATE TRIGGER trg_task_verification_guard
+BEFORE UPDATE OF status ON collection_tasks
+FOR EACH ROW EXECUTE FUNCTION validate_task_verification();
+
+-- Auditing captures row snapshots for selected operational entities.
+-- The API sets app.actor_user_id and app.request_id with SET LOCAL per transaction.
+CREATE FUNCTION audit_row_change() RETURNS TRIGGER LANGUAGE plpgsql AS $
+DECLARE
+  v_actor UUID;
+  v_request_id TEXT;
+  v_old JSONB;
+  v_new JSONB;
+  v_entity_id TEXT;
+BEGIN
+  v_actor := NULLIF(current_setting('app.actor_user_id', TRUE),'')::UUID;
+  v_request_id := NULLIF(current_setting('app.request_id', TRUE),'');
+  IF TG_OP='INSERT' THEN
+    v_new := to_jsonb(NEW);
+    v_entity_id := v_new ->> TG_ARGV[0];
+  ELSIF TG_OP='UPDATE' THEN
+    v_old := to_jsonb(OLD);
+    v_new := to_jsonb(NEW);
+    v_entity_id := v_new ->> TG_ARGV[0];
+  ELSE
+    v_old := to_jsonb(OLD);
+    v_entity_id := v_old ->> TG_ARGV[0];
+  END IF;
+  INSERT INTO audit_logs(actor_user_id,action,entity_type,entity_id,request_id,safe_metadata)
+  VALUES (
+    v_actor, TG_OP, TG_TABLE_NAME, COALESCE(v_entity_id,'unknown'), v_request_id,
+    jsonb_build_object('old',v_old,'new',v_new)
+  );
+  IF TG_OP='DELETE' THEN RETURN OLD; END IF;
+  RETURN NEW;
+END; $;
+CREATE TRIGGER trg_audit_reports AFTER INSERT OR UPDATE OR DELETE ON waste_reports
+FOR EACH ROW EXECUTE FUNCTION audit_row_change('report_id');
+CREATE TRIGGER trg_audit_tasks AFTER INSERT OR UPDATE OR DELETE ON collection_tasks
+FOR EACH ROW EXECUTE FUNCTION audit_row_change('task_id');
+CREATE TRIGGER trg_audit_submissions AFTER INSERT OR UPDATE OR DELETE ON collection_submissions
+FOR EACH ROW EXECUTE FUNCTION audit_row_change('submission_id');
+CREATE TRIGGER trg_audit_allocations AFTER INSERT OR UPDATE OR DELETE ON material_allocations
+FOR EACH ROW EXECUTE FUNCTION audit_row_change('allocation_id');
+
 -- Views are read models, not authorization boundaries.
 CREATE VIEW v_report_overview AS
 SELECT r.report_id, r.submitted_at, r.status, r.priority, r.is_anonymous,
@@ -541,6 +601,30 @@ INSERT INTO permissions(permission_key,description) VALUES
  ('analytics.read','Read dashboards and exports'),
  ('announcements.manage','Publish announcements'),
  ('audit.read','Read audit history');
+
+-- Least-privilege role-to-permission mapping.
+INSERT INTO role_permissions(role_id, permission_id)
+SELECT r.role_id, p.permission_id
+FROM roles r CROSS JOIN permissions p
+WHERE r.role_key='administrator';
+INSERT INTO role_permissions(role_id, permission_id)
+SELECT r.role_id, p.permission_id
+FROM roles r JOIN permissions p ON p.permission_key IN ('analytics.read','reports.read')
+WHERE r.role_key='fest_organizer';
+INSERT INTO role_permissions(role_id, permission_id)
+SELECT r.role_id, p.permission_id
+FROM roles r JOIN permissions p ON p.permission_key IN
+ ('locations.manage','reports.read','reports.review','tasks.manage','collections.verify','materials.manage','analytics.read','announcements.manage')
+WHERE r.role_key='waste_manager';
+INSERT INTO role_permissions(role_id, permission_id)
+SELECT r.role_id, p.permission_id
+FROM roles r JOIN permissions p ON p.permission_key IN ('reports.read','tasks.execute','collections.submit')
+WHERE r.role_key='team_lead';
+INSERT INTO role_permissions(role_id, permission_id)
+SELECT r.role_id, p.permission_id
+FROM roles r JOIN permissions p ON p.permission_key IN ('tasks.execute','collections.submit')
+WHERE r.role_key='volunteer';
+
 INSERT INTO fest(fest_id,name,description,status)
 VALUES (1,'BAUST CSE Fest','Waste management operations for BAUST CSE Fest','planned');
 INSERT INTO waste_categories(code,name,description,is_recyclable) VALUES
