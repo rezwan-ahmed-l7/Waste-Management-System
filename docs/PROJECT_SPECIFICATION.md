@@ -35,7 +35,7 @@ QR workflows, live/geospatial tracking, SMS/WhatsApp provider integration, push 
 | Volunteer/Collector | Work assigned tasks and submit evidence | Own assignments and permitted team task data |
 | Reporter | Submit and track reports | Own reports; anonymous access only through secure tracking token |
 
-Roles are granted by an Administrator. Public signup never grants privileged roles. Every protected action is authorized on the server. Anonymous tracking reveals only safe reporter-facing status, never internal notes or personal data.
+Roles are granted by an Administrator. Public signup never grants privileged roles. Every protected action is authorized on the server. Anonymous tracking reveals only safe reporter-facing status and timestamps, never internal notes, contact details, or staff identity.
 
 ## 4. Functional requirements
 
