@@ -55,4 +55,12 @@ jobs:
         run: psql -v ON_ERROR_STOP=1 "$DATABASE_URL" -f database/002_smoke_test.sql
       - name: Execute DBMS reporting queries
         run: psql -v ON_ERROR_STOP=1 "$DATABASE_URL" -f database/003_reporting_queries.sql
+      - name: Exercise PostgreSQL backup and restore
+        run: |
+          pg_dump --format=custom --no-owner --no-acl "$DATABASE_URL" --file "$RUNNER_TEMP/waste_management.dump"
+          createdb -h localhost -U postgres waste_management_restore_check
+          pg_restore --exit-on-error --no-owner --no-privileges -d postgresql://postgres:postgres@localhost:5432/waste_management_restore_check "$RUNNER_TEMP/waste_management.dump"
+          DATABASE_URL=postgresql://postgres:postgres@localhost:5432/waste_management_restore_check npm run db:verify
+          psql -v ON_ERROR_STOP=1 postgresql://postgres:postgres@localhost:5432/waste_management_restore_check -f database/002_smoke_test.sql
+          psql -v ON_ERROR_STOP=1 postgresql://postgres:postgres@localhost:5432/waste_management_restore_check -f database/003_reporting_queries.sql
       - run: npm run build
