@@ -169,3 +169,10 @@ Quantity allocation must re-check available quantity inside a transaction while 
 - Recycling rate: recycled weight / verified collected weight for matching scope and compatible units; show denominator and never mix categories/scopes.
 
 Use one analytics implementation for dashboard and exports.
+
+
+## Confirmed project decisions
+- Single BAUST CSE Fest; no multi-fest tenancy in this release.
+- Anonymous reporting is supported; high-entropy tracking tokens are stored as hashes.
+- English snake_case identifiers.
+- PostgreSQL schema implementation: `database/001_schema.sql` (added with the database foundation).
