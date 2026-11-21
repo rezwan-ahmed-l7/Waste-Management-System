@@ -53,6 +53,8 @@ jobs:
         run: npm run db:verify
       - name: Run database integrity smoke tests
         run: psql -v ON_ERROR_STOP=1 "$DATABASE_URL" -f database/002_smoke_test.sql
+      - name: Test concurrent material allocation guard
+        run: npm run db:test-concurrency
       - name: Execute DBMS reporting queries
         run: psql -v ON_ERROR_STOP=1 "$DATABASE_URL" -f database/003_reporting_queries.sql
       - name: Exercise PostgreSQL backup and restore
