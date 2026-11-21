@@ -81,7 +81,7 @@ createdb -h localhost -U postgres waste_management_restore_check
 pg_restore -h localhost -U postgres -d waste_management_restore_check --clean --if-exists "D:\Backups\waste_management.dump"
 ```
 
-After restore, run `npm run db:verify`, execute `database/002_smoke_test.sql`, and compare expected row counts and application behavior before accepting the backup. Back up the private evidence directory (or private object-storage bucket) consistently with the database; a database dump alone does not contain uploaded files. Define retention, encryption, off-site copies, RPO/RTO and restore ownership with the event operator. This runbook is documented but a production backup/restore drill has not yet been executed.
+After restore, run `npm run db:verify`, execute `database/002_smoke_test.sql`, and compare expected row counts and application behavior before accepting the backup. Back up the private evidence directory (or private object-storage bucket) consistently with the database; a database dump alone does not contain uploaded files. Define retention, encryption, off-site copies, RPO/RTO and restore ownership with the event operator. CI now performs a PostgreSQL custom-format dump, restores it into a separate disposable database, and reruns schema verification, smoke tests and reporting queries. This verifies database backup/restore mechanics; production retention, encrypted/off-site storage, and coordinated restore of private uploaded files still require an operator-owned drill.
 
 ## Private evidence storage
 
