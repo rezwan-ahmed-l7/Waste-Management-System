@@ -54,7 +54,7 @@ A Docker Compose deployment is provided for a single Linux host with a DNS name.
 1. Point the chosen domain's DNS A/AAAA records at the host and allow inbound TCP 80/443.
 2. Copy `.env.production.example` to `.env.production`. Set a long random URL-safe database password and a unique bootstrap administrator password; never commit this file.
 3. Validate configuration: `docker compose --env-file .env.production config --quiet`.
-4. Start: `docker compose --env-file .env.production up -d --build`. On a fresh PostgreSQL volume, the schema is initialized from `database/001_schema.sql`.
+4. Start: `docker compose --env-file .env.production up -d --build`. On a fresh PostgreSQL volume, `database/001_schema.sql` initializes the schema and `database/002_grants.sh` creates a non-superuser `waste_app` runtime role with DML-only grants.
 5. Create the first administrator once: `docker compose --env-file .env.production exec api npm run bootstrap:admin --workspace @waste/api`.
 6. Remove `BOOTSTRAP_ADMIN_PASSWORD` (and the email if desired) from `.env.production`, then restart the API: `docker compose --env-file .env.production up -d api`.
 7. Verify `https://DOMAIN/api/v1/ready`, sign in, configure fest dates/timezone, locations, categories, roles, teams and real processing destinations.
