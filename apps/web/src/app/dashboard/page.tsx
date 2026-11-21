@@ -407,7 +407,9 @@ export default function DashboardPage() {
   const [analytics,setAnalytics] = useState<Analytics | null>(null);
   const [locations,setLocations] = useState<LocationData>({zones:[],areas:[],bins:[]});
   const [adminUsers,setAdminUsers] = useState<AdminUser[]>([]);
-  const [roles,setRoles] = useState<Role[]>([]);\n  const [materials,setMaterials] = useState<MaterialOverview>({batches:[],segregations:[],destinations:[],allocations:[]});\n  const [rounds,setRounds] = useState<CleaningRound[]>([]);
+  const [roles,setRoles] = useState<Role[]>([]);
+  const [materials,setMaterials] = useState<MaterialOverview>({batches:[],segregations:[],destinations:[],allocations:[]});
+  const [rounds,setRounds] = useState<CleaningRound[]>([]);
   const [error,setError] = useState("");
   const [loading,setLoading] = useState(true);
   const [workingId,setWorkingId] = useState("");
@@ -443,7 +445,9 @@ export default function DashboardPage() {
     setAnalytics(analyticsPayload ?? null);
     setLocations(locationPayload ?? {zones:[],areas:[],bins:[]});
     setAdminUsers(adminUserPayload ?? []);
-    setRoles(rolePayload ?? []);\n    setMaterials(materialPayload ?? {batches:[],segregations:[],destinations:[],allocations:[]});\n    setRounds(roundPayload ?? []);
+    setRoles(rolePayload ?? []);
+    setMaterials(materialPayload ?? {batches:[],segregations:[],destinations:[],allocations:[]});
+    setRounds(roundPayload ?? []);
   },[]);
 
   useEffect(() => {
@@ -515,7 +519,9 @@ export default function DashboardPage() {
         {error ? <p className="error" role="alert">{error}</p> : null}
 
 
-        {user.roles.includes("administrator") ? <UserAdmin users={adminUsers} roles={roles} onDone={()=>void loadData()} /> : null}\n        {canManageTasks ? <RoundManager rounds={rounds} areas={locations.areas} onDone={()=>void loadData()} /> : null}\n        {canManageTasks ? <MaterialManager data={materials} categories={categories} onDone={()=>void loadData()} /> : null}
+        {user.roles.includes("administrator") ? <UserAdmin users={adminUsers} roles={roles} onDone={()=>void loadData()} /> : null}
+        {canManageTasks ? <RoundManager rounds={rounds} areas={locations.areas} onDone={()=>void loadData()} /> : null}
+        {canManageTasks ? <MaterialManager data={materials} categories={categories} onDone={()=>void loadData()} /> : null}
         {canManageTasks ? <LocationManager locations={locations} categories={categories} onDone={()=>void loadData()} /> : null}
 
         {analytics ? <section className="workspaceSection">
