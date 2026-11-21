@@ -161,7 +161,7 @@ export default function DashboardPage() {
                 <p>{report.description}</p>
                 <small className="muted">Report {report.reportId}</small>
                 <div className="buttonRow">
-                  {report.status==="submitted" ? <button className="secondaryButton" disabled={workingId===report.reportId} onClick={()=>perform(report.reportId,()=>apiRequest("/reports/"+report.reportId+"/start-review",{method:"POST"}))}>Start review</button> : null}
+                  {canReviewReports && report.status==="submitted" ? <button className="secondaryButton" disabled={workingId===report.reportId} onClick={()=>perform(report.reportId,()=>apiRequest("/reports/"+report.reportId+"/start-review",{method:"POST"}))}>Start review</button> : null}
                   {canReviewReports && report.status==="under_review" ? <>
                     <button className="primaryButton" disabled={workingId===report.reportId} onClick={()=>perform(report.reportId,()=>apiRequest("/reports/"+report.reportId+"/review",{method:"POST",body:JSON.stringify({action:"accept"})}))}>Accept report</button>
                     <button className="dangerButton" disabled={workingId===report.reportId} onClick={()=>{const reason=window.prompt("Why is this report being rejected?");if(reason?.trim())void perform(report.reportId,()=>apiRequest("/reports/"+report.reportId+"/review",{method:"POST",body:JSON.stringify({action:"reject",reason})}));}}>Reject</button>
