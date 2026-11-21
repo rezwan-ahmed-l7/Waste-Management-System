@@ -197,6 +197,61 @@ function AnnouncementForm({ onDone }: { onDone: () => void }) {
   </form>;
 }
 
+
+type LocationData = {
+  zones: {zoneId:string;code:string;name:string;isActive:boolean}[];
+  areas: {areaId:string;zoneId:string;code:string;name:string;isActive:boolean}[];
+  bins: {binId:string;areaId:string;code:string;capacityKg:number|null;categoryName:string|null;isActive:boolean}[];
+};
+
+function LocationManager({locations,categories,onDone}:{locations:LocationData;categories:Category[];onDone:()=>void}){
+  const [zoneCode,setZoneCode]=useState(""); const [zoneName,setZoneName]=useState("");
+  const [areaZone,setAreaZone]=useState(""); const [areaCode,setAreaCode]=useState(""); const [areaName,setAreaName]=useState("");
+  const [binArea,setBinArea]=useState(""); const [binCode,setBinCode]=useState(""); const [binCategory,setBinCategory]=useState(""); const [capacity,setCapacity]=useState("");
+  const [categoryCode,setCategoryCode]=useState(""); const [categoryName,setCategoryName]=useState(""); const [recyclable,setRecyclable]=useState(false);
+  const [error,setError]=useState(""); const [saving,setSaving]=useState(false);
+  async function run(path:string,body:unknown){
+    setSaving(true);setError("");
+    try{await apiRequest(path,{method:"POST",body:JSON.stringify(body)});onDone();}
+    catch(cause){setError(cause instanceof Error?cause.message:"Location update failed.");}
+    finally{setSaving(false);}
+  }
+  return <section className="workspaceSection">
+    <div className="sectionHeading"><div><div className="eyebrow">Fest configuration</div><h2>Zones, areas, bins & categories</h2></div></div>
+    <div className="locationForms">
+      <form className="formCard" onSubmit={event=>{event.preventDefault();void run("/zones",{code:zoneCode,name:zoneName});setZoneCode("");setZoneName("");}}>
+        <h3>Add zone</h3><input required value={zoneCode} onChange={e=>setZoneCode(e.target.value)} placeholder="Zone code"/>
+        <input required value={zoneName} onChange={e=>setZoneName(e.target.value)} placeholder="Zone name"/>
+        <button className="secondaryButton" disabled={saving}>Create zone</button>
+      </form>
+      <form className="formCard" onSubmit={event=>{event.preventDefault();void run("/areas",{zoneId:areaZone,code:areaCode,name:areaName});setAreaCode("");setAreaName("");}}>
+        <h3>Add area</h3><select required value={areaZone} onChange={e=>setAreaZone(e.target.value)}><option value="">Choose zone</option>{locations.zones.filter(z=>z.isActive).map(z=><option key={z.zoneId} value={z.zoneId}>{z.name}</option>)}</select>
+        <input required value={areaCode} onChange={e=>setAreaCode(e.target.value)} placeholder="Area code"/>
+        <input required value={areaName} onChange={e=>setAreaName(e.target.value)} placeholder="Area name"/>
+        <button className="secondaryButton" disabled={saving || !areaZone}>Create area</button>
+      </form>
+      <form className="formCard" onSubmit={event=>{event.preventDefault();void run("/bins",{areaId:binArea,code:binCode,...(binCategory?{categoryId:Number(binCategory)}:{}),...(capacity?{capacityKg:Number(capacity)}:{})});setBinCode("");setCapacity("");}}>
+        <h3>Add bin</h3><select required value={binArea} onChange={e=>setBinArea(e.target.value)}><option value="">Choose area</option>{locations.areas.filter(a=>a.isActive).map(a=><option key={a.areaId} value={a.areaId}>{a.name}</option>)}</select>
+        <input required value={binCode} onChange={e=>setBinCode(e.target.value)} placeholder="Bin code"/>
+        <select value={binCategory} onChange={e=>setBinCategory(e.target.value)}><option value="">Any category</option>{categories.map(c=><option key={c.categoryId} value={c.categoryId}>{c.name}</option>)}</select>
+        <input type="number" min="0.01" step="0.01" value={capacity} onChange={e=>setCapacity(e.target.value)} placeholder="Capacity kg (optional)"/>
+        <button className="secondaryButton" disabled={saving || !binArea}>Create bin</button>
+      </form>
+      <form className="formCard" onSubmit={event=>{event.preventDefault();void run("/waste-categories",{code:categoryCode,name:categoryName,isRecyclable:recyclable});setCategoryCode("");setCategoryName("");}}>
+        <h3>Add waste category</h3><input required value={categoryCode} onChange={e=>setCategoryCode(e.target.value)} placeholder="Category code"/>
+        <input required value={categoryName} onChange={e=>setCategoryName(e.target.value)} placeholder="Category name"/>
+        <label className="checkLabel"><input type="checkbox" checked={recyclable} onChange={e=>setRecyclable(e.target.checked)}/> Recyclable material</label>
+        <button className="secondaryButton" disabled={saving}>Create category</button>
+      </form>
+    </div>
+    {error?<p className="error">{error}</p>:null}
+    <div className="locationInventory">
+      <article className="panel"><h3>Zones & areas</h3>{locations.zones.map(zone=><div className="inventoryLine" key={zone.zoneId}><strong>{zone.name}</strong><span>{zone.code} · {zone.isActive?"Active":"Inactive"}</span></div>)}{locations.areas.map(area=><div className="inventoryLine nested" key={area.areaId}><span>{area.name}</span><span>{area.code} · {area.isActive?"Active":"Inactive"}</span></div>)}</article>
+      <article className="panel"><h3>Bins</h3>{locations.bins.length===0?<p className="muted">No bins configured.</p>:locations.bins.map(bin=><div className="inventoryLine" key={bin.binId}><strong>{bin.code}</strong><span>{bin.categoryName??"Uncategorized"} · {bin.capacityKg??"—"} kg · {bin.isActive?"Active":"Inactive"}</span></div>)}</article>
+    </div>
+  </section>;
+}
+
 export default function DashboardPage() {
   const router = useRouter();
   const [user,setUser] = useState<CurrentUser | null>(null);
@@ -207,7 +262,7 @@ export default function DashboardPage() {
   const [teams,setTeams] = useState<Team[]>([]);
   const [notifications,setNotifications] = useState<Notification[]>([]);
   const [announcements,setAnnouncements] = useState<Announcement[]>([]);
-  const [analytics,setAnalytics] = useState<Analytics | null>(null);
+  const [analytics,setAnalytics] = useState<Analytics | null>(null);\n  const [locations,setLocations] = useState<LocationData>({zones:[],areas:[],bins:[]});
   const [error,setError] = useState("");
   const [loading,setLoading] = useState(true);
   const [workingId,setWorkingId] = useState("");
@@ -220,7 +275,7 @@ export default function DashboardPage() {
     const canWork = current.roles.some(role=>["administrator","waste_manager","team_lead","volunteer"].includes(role));
     const canManage = current.roles.some(role=>["administrator","waste_manager"].includes(role));
     const canSeeAnalytics = current.roles.some(role=>["administrator","waste_manager","fest_organizer"].includes(role));
-    const [reportPayload,taskPayload,optionsPayload,userPayload,teamPayload,notificationPayload,announcementPayload,analyticsPayload] = await Promise.all([
+    const [reportPayload,taskPayload,optionsPayload,userPayload,teamPayload,notificationPayload,announcementPayload,analyticsPayload,locationPayload] = await Promise.all([
       isManager ? apiRequest("/reports?pageSize=30") : Promise.resolve([]),
       canWork ? apiRequest("/tasks?pageSize=30") : Promise.resolve([]),
       canWork ? apiRequest("/public/form-options") : Promise.resolve({categories:[]}),
@@ -237,7 +292,7 @@ export default function DashboardPage() {
     setTeams(teamPayload ?? []);
     setNotifications(notificationPayload ?? []);
     setAnnouncements(announcementPayload ?? []);
-    setAnalytics(analyticsPayload ?? null);
+    setAnalytics(analyticsPayload ?? null);\n    setLocations(locationPayload ?? {zones:[],areas:[],bins:[]});
   },[]);
 
   useEffect(() => {
@@ -309,7 +364,7 @@ export default function DashboardPage() {
         {error ? <p className="error" role="alert">{error}</p> : null}
 
 
-        {analytics ? <section className="workspaceSection">
+        {canManageTasks ? <LocationManager locations={locations} categories={categories} onDone={()=>void loadData()} /> : null}\n\n        {analytics ? <section className="workspaceSection">
           <div className="sectionHeading"><div><div className="eyebrow">Live database metrics</div><h2>Fest overview</h2></div></div>
           <div className="metricGrid">
             <article className="metricCard"><span>Reports</span><strong>{analytics.reportCounts.reduce((sum,item)=>sum+Number(item.count),0)}</strong></article>
