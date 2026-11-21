@@ -13,6 +13,7 @@ COPY . .
 ARG NEXT_PUBLIC_API_BASE_URL=https://localhost/api/v1
 ENV NEXT_PUBLIC_API_BASE_URL=${NEXT_PUBLIC_API_BASE_URL}
 RUN npm run build
+RUN chown -R node:node /app
 
 ENV NODE_ENV=production
 USER node
