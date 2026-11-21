@@ -632,7 +632,7 @@ BEGIN
   END IF;
   v_actor := NULLIF(current_setting('app.actor_user_id',TRUE),'')::UUID;
   INSERT INTO report_status_history(report_id,from_status,to_status,changed_by,reason,is_public)
-  VALUES (NEW.report_id,OLD.status,NEW.status,v_actor,NEW.review_reason,TRUE);
+  VALUES (NEW.report_id,OLD.status,NEW.status,v_actor,NULL,TRUE);
   RETURN NEW;
 END; $fn$;
 CREATE TRIGGER trg_report_status_transition
