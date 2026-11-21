@@ -64,7 +64,7 @@ Never commit real credentials, session secrets, database passwords, or private u
 - [x] Location/category administration, teams, memberships, rounds, tasks, assignments, collection submissions and manager decisions implemented.
 - [x] Verified-only material batches, segregation, destinations, allocations and database balance guards implemented.
 - [x] In-app notifications, announcements, analytics, CSV exports, fest settings and audit-log screens implemented.
-- [x] CI passed on 2026-11-21 for commit `ec7128c6075c446e7f13a43e043a84f511a99c27`: clean `npm ci`, `npm audit`, typecheck, lint, Vitest, PostgreSQL 16 schema verification, database smoke tests, reporting SQL and production build.
+- [x] CI passed on 2026-11-21 for commit `f879b7237e8e4e63cee4441e07be04ce5c561a58`: clean `npm ci`, `npm audit` (0 advisories), typecheck, lint, 11 Vitest tests, PostgreSQL 16 schema verification, database smoke tests, reporting SQL, PostgreSQL 16 dump/restore round-trip verification and production build.
 - [ ] Add broad role/resource authorization and lifecycle regression coverage plus browser-level end-to-end journeys.
 - [ ] Add a tested backup/restore drill and production deployment configuration.
 - [ ] Complete operational security review and confirm fest-specific settings, privacy/retention policy, hosting and persistent private storage before production use.
