@@ -7,7 +7,7 @@ const reportId = "e6f9b8b0-7f1b-4d5f-ae83-5e4d20c0a1a2";
 const cookie = "wm_session=" + "x".repeat(43);
 
 function authenticatedDatabase(options: { permitted?: boolean; reportNote?: boolean } = {}) {
-  const statements: { sql: string; values?: unknown[] }[] = [];
+  const statements: { sql: string; values: unknown[] | undefined }[] = [];
   const query = vi.fn(async (sql: string, values?: unknown[]) => {
     statements.push({ sql, values });
     if (sql.includes("FROM waste_mgmt.sessions s")) {
