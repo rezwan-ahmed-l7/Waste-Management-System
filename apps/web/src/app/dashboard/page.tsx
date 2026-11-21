@@ -202,7 +202,12 @@ export default function DashboardPage() {
   const [user,setUser] = useState<CurrentUser | null>(null);
   const [reports,setReports] = useState<Report[]>([]);
   const [tasks,setTasks] = useState<Task[]>([]);
-  const [categories,setCategories] = useState<Category[]>([]);\n  const [assignableUsers,setAssignableUsers] = useState<AssignableUser[]>([]);\n  const [teams,setTeams] = useState<Team[]>([]);\n  const [notifications,setNotifications] = useState<Notification[]>([]);\n  const [announcements,setAnnouncements] = useState<Announcement[]>([]);\n  const [analytics,setAnalytics] = useState<Analytics | null>(null);
+  const [categories,setCategories] = useState<Category[]>([]);
+  const [assignableUsers,setAssignableUsers] = useState<AssignableUser[]>([]);
+  const [teams,setTeams] = useState<Team[]>([]);
+  const [notifications,setNotifications] = useState<Notification[]>([]);
+  const [announcements,setAnnouncements] = useState<Announcement[]>([]);
+  const [analytics,setAnalytics] = useState<Analytics | null>(null);
   const [error,setError] = useState("");
   const [loading,setLoading] = useState(true);
   const [workingId,setWorkingId] = useState("");
@@ -213,14 +218,26 @@ export default function DashboardPage() {
     setUser(current);
     const isManager = current.roles.some(role=>["administrator","waste_manager","fest_organizer"].includes(role));
     const canWork = current.roles.some(role=>["administrator","waste_manager","team_lead","volunteer"].includes(role));
-    const canManage = current.roles.some(role=>["administrator","waste_manager"].includes(role));\n    const canSeeAnalytics = current.roles.some(role=>["administrator","waste_manager","fest_organizer"].includes(role));\n    const [reportPayload,taskPayload,optionsPayload,userPayload,teamPayload,notificationPayload,announcementPayload,analyticsPayload] = await Promise.all([
-      isManager ? apiRequest("/reports?pageSize=30") : Promise.resolve({data:[]}),
-      canWork ? apiRequest("/tasks?pageSize=30") : Promise.resolve({data:[]}),
-      canWork ? apiRequest("/public/form-options") : Promise.resolve({categories:[]})
+    const canManage = current.roles.some(role=>["administrator","waste_manager"].includes(role));
+    const canSeeAnalytics = current.roles.some(role=>["administrator","waste_manager","fest_organizer"].includes(role));
+    const [reportPayload,taskPayload,optionsPayload,userPayload,teamPayload,notificationPayload,announcementPayload,analyticsPayload] = await Promise.all([
+      isManager ? apiRequest("/reports?pageSize=30") : Promise.resolve([]),
+      canWork ? apiRequest("/tasks?pageSize=30") : Promise.resolve([]),
+      canWork ? apiRequest("/public/form-options") : Promise.resolve({categories:[]}),
+      canManage ? apiRequest("/users/assignable") : Promise.resolve([]),
+      canManage ? apiRequest("/teams") : Promise.resolve([]),
+      apiRequest("/notifications"),
+      apiRequest("/announcements"),
+      canSeeAnalytics ? apiRequest("/analytics/overview") : Promise.resolve(null)
     ]);
     setReports(reportPayload ?? []);
     setTasks(taskPayload ?? []);
-    setCategories(optionsPayload.categories ?? []);\n    setAssignableUsers(userPayload ?? []);\n    setTeams(teamPayload ?? []);\n    setNotifications(notificationPayload ?? []);\n    setAnnouncements(announcementPayload ?? []);\n    setAnalytics(analyticsPayload ?? null);
+    setCategories(optionsPayload.categories ?? []);
+    setAssignableUsers(userPayload ?? []);
+    setTeams(teamPayload ?? []);
+    setNotifications(notificationPayload ?? []);
+    setAnnouncements(announcementPayload ?? []);
+    setAnalytics(analyticsPayload ?? null);
   },[]);
 
   useEffect(() => {
@@ -273,7 +290,8 @@ export default function DashboardPage() {
   if(!user)return <main className="authPage"><p>Redirecting to sign in…</p></main>;
 
   const isManager = user.roles.some(role=>["administrator","waste_manager"].includes(role));
-  const canViewReports = user.roles.some(role=>["administrator","waste_manager","fest_organizer"].includes(role));\n  const canReviewReports = isManager;
+  const canViewReports = user.roles.some(role=>["administrator","waste_manager","fest_organizer"].includes(role));
+  const canReviewReports = isManager;
   const canManageTasks = isManager;
   const canExecuteTasks = user.roles.some(role=>["team_lead","volunteer"].includes(role));
 
@@ -289,6 +307,46 @@ export default function DashboardPage() {
         <p className="muted">{user.email}</p>
         <div className="roleList">{user.roles.map(role=><span className="rolePill" key={role}>{role.replaceAll("_"," ")}</span>)}</div>
         {error ? <p className="error" role="alert">{error}</p> : null}
+
+
+        {analytics ? <section className="workspaceSection">
+          <div className="sectionHeading"><div><div className="eyebrow">Live database metrics</div><h2>Fest overview</h2></div></div>
+          <div className="metricGrid">
+            <article className="metricCard"><span>Reports</span><strong>{analytics.reportCounts.reduce((sum,item)=>sum+Number(item.count),0)}</strong></article>
+            <article className="metricCard"><span>Collection tasks</span><strong>{analytics.taskCounts.reduce((sum,item)=>sum+Number(item.count),0)}</strong></article>
+            <article className="metricCard"><span>Verified collected</span><strong>{analytics.verifiedWeights.reduce((sum,item)=>sum+Number(item.weightKg),0).toFixed(3)} kg</strong></article>
+            <article className="metricCard"><span>Awaiting processing</span><strong>{Number(analytics.remainingWeightKg).toFixed(3)} kg</strong></article>
+          </div>
+          <div className="analyticsColumns">
+            <article className="panel"><h3>Verified weight by category</h3>{analytics.verifiedWeights.map(item=><p className="metricLine" key={item.categoryName}><span>{item.categoryName}</span><strong>{Number(item.weightKg).toFixed(3)} kg</strong></p>)}</article>
+            <article className="panel"><h3>Processing destinations</h3>{analytics.destinationWeights.map(item=><p className="metricLine" key={item.destinationType}><span>{item.destinationType}</span><strong>{Number(item.weightKg).toFixed(3)} kg</strong></p>)}{analytics.destinationWeights.length===0?<p className="muted">No processing allocations recorded yet.</p>:null}</article>
+          </div>
+          <div className="buttonRow"><button className="secondaryButton" onClick={()=>void downloadCsv("reports")}>Export reports CSV</button><button className="secondaryButton" onClick={()=>void downloadCsv("tasks")}>Export tasks CSV</button><button className="secondaryButton" onClick={()=>void downloadCsv("collections")}>Export verified collections CSV</button></div>
+        </section> : null}
+
+        {canManageTasks ? <section className="workspaceSection">
+          <div className="sectionHeading"><div><div className="eyebrow">Workforce</div><h2>Teams</h2></div><span className="countPill">{teams.length}</span></div>
+          <TeamCreateForm users={assignableUsers} onDone={()=>void loadData()} />
+          {teams.map(team=><article className="workCard teamCard" key={team.teamId}>
+            <div className="workCardTop"><strong>{team.name}</strong><span className="muted">{team.activeMemberCount} active members</span></div>
+            <small className="muted">{team.code}</small>
+            <TeamMemberForm team={team} users={assignableUsers} onDone={()=>void loadData()} />
+          </article>)}
+        </section> : null}
+
+        <section className="workspaceSection">
+          <div className="sectionHeading"><div><div className="eyebrow">Fest updates</div><h2>Announcements</h2></div><span className="countPill">{announcements.length}</span></div>
+          {canManageTasks ? <AnnouncementForm onDone={()=>void loadData()} /> : null}
+          {announcements.length===0?<p className="emptyState">No active announcements.</p>:announcements.map(item=><article className="workCard" key={item.announcementId}><strong>{item.title}</strong><p>{item.body}</p><small className="muted">{item.audience.replaceAll("_"," ")} · {new Date(item.publishedAt).toLocaleString()}</small></article>)}
+        </section>
+
+        <section className="workspaceSection">
+          <div className="sectionHeading"><div><div className="eyebrow">Personal updates</div><h2>Notifications</h2></div><span className="countPill">{notifications.filter(item=>!item.readAt).length} unread</span></div>
+          {notifications.length===0?<p className="emptyState">You have no notifications.</p>:notifications.map(item=><article className={"notificationCard "+(item.readAt?"read":"unread")} key={item.notificationId}>
+            <div><strong>{item.title}</strong><p>{item.body}</p><small className="muted">{new Date(item.createdAt).toLocaleString()}</small></div>
+            {!item.readAt?<button className="secondaryButton" onClick={()=>void markNotificationRead(item.notificationId)}>Mark read</button>:null}
+          </article>)}
+        </section>
 
         {canViewReports ? (
           <section className="workspaceSection">
@@ -323,7 +381,8 @@ export default function DashboardPage() {
                 <div className="buttonRow">
                   {canExecuteTasks && task.status==="assigned" ? <button className="primaryButton" disabled={workingId===task.taskId} onClick={()=>perform(task.taskId,()=>apiRequest("/tasks/"+task.taskId+"/start",{method:"POST"}))}>Start task</button> : null}
                   {canExecuteTasks && task.status==="in_progress" ? <EvidenceForm taskId={task.taskId} categories={categories} onDone={()=>void loadData()}/> : null}
-                  {canManageTasks && ["open","assigned"].includes(task.status) ? <TaskAssignmentForm taskId={task.taskId} users={assignableUsers} teams={teams} onDone={()=>void loadData()} /> : null}\n                  {canManageTasks && task.status==="submitted_for_verification" && task.latestSubmissionId ? <>
+                  {canManageTasks && ["open","assigned"].includes(task.status) ? <TaskAssignmentForm taskId={task.taskId} users={assignableUsers} teams={teams} onDone={()=>void loadData()} /> : null}
+                  {canManageTasks && task.status==="submitted_for_verification" && task.latestSubmissionId ? <>
                     <button className="primaryButton" disabled={workingId===task.taskId} onClick={()=>perform(task.taskId,()=>apiRequest("/collection-submissions/"+task.latestSubmissionId+"/decision",{method:"POST",body:JSON.stringify({decision:"verify"})}))}>Verify collection</button>
                     <button className="dangerButton" disabled={workingId===task.taskId} onClick={()=>{const reason=window.prompt("What needs correction?");if(reason?.trim())void perform(task.taskId,()=>apiRequest("/collection-submissions/"+task.latestSubmissionId+"/decision",{method:"POST",body:JSON.stringify({decision:"reject",reason})}));}}>Reject evidence</button>
                   </> : null}
