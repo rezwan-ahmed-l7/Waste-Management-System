@@ -90,3 +90,5 @@ jobs:
         run: docker compose --env-file .env.production.example config --quiet
       - name: Build production container image
         run: docker build --build-arg NEXT_PUBLIC_API_BASE_URL=https://fest.example.edu/api/v1 -t baust-waste-management:ci .
+      - name: Verify container runs as non-root
+        run: docker run --rm --entrypoint sh baust-waste-management:ci -c 'test "$(id -u)" -ne 0'
