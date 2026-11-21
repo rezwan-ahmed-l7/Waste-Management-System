@@ -606,6 +606,80 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
 
 
 
+
+  app.get("/api/v1/fest", authenticate(database), requirePermission(database, "fest.manage"), async (_req,res,next)=>{
+    try{
+      const result=await database.query(
+        "SELECT fest_id AS \"festId\",name,description,timezone,starts_at AS \"startsAt\",ends_at AS \"endsAt\",status,updated_at AS \"updatedAt\" " +
+        "FROM waste_mgmt.fest WHERE fest_id=1"
+      );
+      if(!result.rows[0]){res.status(404).json({error:{code:"FEST_NOT_FOUND",message:"Fest configuration not found."}});return;}
+      res.status(200).json({data:result.rows[0]});
+    }catch(error){next(error);}
+  });
+
+  app.patch("/api/v1/fest", authenticate(database), requirePermission(database, "fest.manage"), async (req,res,next)=>{
+    const body=z.object({
+      name:z.string().trim().min(2).max(160),
+      description:z.string().trim().max(3000).nullable().optional(),
+      timezone:z.string().trim().min(3).max(80),
+      startsAt:z.string().datetime().nullable(),
+      endsAt:z.string().datetime().nullable(),
+      status:z.enum(["planned","active","completed","cancelled"])
+    }).strict().safeParse(req.body);
+    const auth=req.auth;
+    if(!body.success||!auth){res.status(400).json({error:{code:"VALIDATION_ERROR",message:"Invalid fest configuration."}});return;}
+    if(body.data.startsAt&&body.data.endsAt&&new Date(body.data.endsAt)<=new Date(body.data.startsAt)){
+      res.status(422).json({error:{code:"INVALID_FEST_WINDOW",message:"Fest end time must be after its start time."}});
+      return;
+    }
+    try{new Intl.DateTimeFormat("en-US",{timeZone:body.data.timezone});}
+    catch{res.status(422).json({error:{code:"INVALID_TIMEZONE",message:"Use a valid IANA time zone, for example Asia/Dhaka."}});return;}
+    try{
+      const client=await database.connect();
+      try{
+        await client.query("BEGIN");
+        await client.query("SELECT set_config('app.actor_user_id',$1,true)",[auth.userId]);
+        const result=await client.query(
+          "UPDATE waste_mgmt.fest SET name=$1,description=$2,timezone=$3,starts_at=$4,ends_at=$5,status=$6 " +
+          "WHERE fest_id=1 RETURNING fest_id AS \"festId\",name,description,timezone,starts_at AS \"startsAt\",ends_at AS \"endsAt\",status,updated_at AS \"updatedAt\"",
+          [body.data.name,body.data.description??null,body.data.timezone,body.data.startsAt,body.data.endsAt,body.data.status]
+        );
+        if(!result.rows[0]){await client.query("ROLLBACK");res.status(404).json({error:{code:"FEST_NOT_FOUND",message:"Fest configuration not found."}});return;}
+        await client.query("COMMIT");
+        res.status(200).json({data:result.rows[0]});
+      }catch(error){await client.query("ROLLBACK").catch(()=>undefined);throw error;}
+      finally{client.release();}
+    }catch(error){next(error);}
+  });
+
+  app.get("/api/v1/audit-logs", authenticate(database), requirePermission(database, "audit.read"), async (req,res,next)=>{
+    const filters=z.object({
+      entityType:z.string().trim().min(1).max(80).optional(),
+      action:z.enum(["INSERT","UPDATE","DELETE"]).optional(),
+      page:z.coerce.number().int().min(1).max(100000).default(1),
+      pageSize:z.coerce.number().int().min(1).max(100).default(50)
+    }).safeParse(req.query);
+    if(!filters.success){res.status(400).json({error:{code:"VALIDATION_ERROR",message:"Invalid audit filters."}});return;}
+    const values:unknown[]=[];
+    const where:string[]=[];
+    if(filters.data.entityType){values.push(filters.data.entityType);where.push("entity_type=$"+values.length);}
+    if(filters.data.action){values.push(filters.data.action);where.push("action=$"+values.length);}
+    const clause=where.length?"WHERE "+where.join(" AND "):"";
+    try{
+      const count=await database.query("SELECT COUNT(*)::int AS total FROM waste_mgmt.audit_logs "+clause,values);
+      const pageValues=[...values,filters.data.pageSize,(filters.data.page-1)*filters.data.pageSize];
+      const rows=await database.query(
+        "SELECT audit_log_id AS \"auditLogId\",entity_type AS \"entityType\",entity_id AS \"entityId\",action, " +
+        "changed_by AS \"changedBy\",created_at AS \"createdAt\",safe_metadata AS \"safeMetadata\",request_id AS \"requestId\" " +
+        "FROM waste_mgmt.audit_logs "+clause+" ORDER BY created_at DESC,audit_log_id DESC " +
+        "LIMIT $"+(values.length+1)+" OFFSET $"+(values.length+2),
+        pageValues
+      );
+      res.status(200).json({data:rows.rows,meta:{page:filters.data.page,pageSize:filters.data.pageSize,total:count.rows[0]?.total??0}});
+    }catch(error){next(error);}
+  });
+
   app.get("/api/v1/roles", authenticate(database), requirePermission(database, "users.manage"), async (_req,res,next)=>{
     try{
       const result=await database.query("SELECT role_id AS \"roleId\",role_key AS \"roleKey\",display_name AS \"displayName\",description FROM waste_mgmt.roles ORDER BY role_id");
