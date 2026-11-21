@@ -7,15 +7,37 @@ import { z } from "zod";
 import { publicWasteReportSchema } from "@waste/contracts";
 import type { Pool } from "pg";
 import { env } from "./config.js";
+import argon2 from "argon2";
+import { authenticate, readSessionToken } from "./auth.js";
 
 type Database = Pick<Pool, "query" | "connect">;
 
-export function createApp(database: Database) {
+export function createApp(database: Database, verifyPassword: (hash: string, password: string) => Promise<boolean> = argon2.verify) {
   const app = express();
   app.disable("x-powered-by");
   app.use(helmet());
   app.use(cors({ origin: env.WEB_ORIGIN, credentials: true }));
   app.use(express.json({ limit: "64kb" }));
+  app.use((req, res, next) => {
+    const origin = req.header("origin");
+    const isMutation = ["POST", "PUT", "PATCH", "DELETE"].includes(req.method);
+    if (isMutation && origin && origin !== env.WEB_ORIGIN) {
+      res.status(403).json({ error: { code: "UNTRUSTED_ORIGIN", message: "Request origin is not allowed." } });
+      return;
+    }
+    next();
+  });
+
+
+  const loginLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    limit: 8,
+    standardHeaders: "draft-8",
+    legacyHeaders: false,
+    handler: (_req, res) => {
+      res.status(429).json({ error: { code: "RATE_LIMITED", message: "Too many sign-in attempts. Try again later." } });
+    }
+  });
 
   const publicReportLimiter = rateLimit({
     windowMs: env.PUBLIC_REPORT_RATE_LIMIT_WINDOW_MS,
@@ -25,6 +47,94 @@ export function createApp(database: Database) {
     handler: (_req, res) => {
       res.status(429).json({ error: { code: "RATE_LIMITED", message: "Too many reports. Please try again later." } });
     }
+  });
+
+
+  app.post("/api/v1/auth/login", loginLimiter, async (req, res, next) => {
+    const body = z.object({
+      email: z.string().trim().email().max(254),
+      password: z.string().min(1).max(128)
+    }).strict().safeParse(req.body);
+    if (!body.success) {
+      res.status(400).json({ error: { code: "VALIDATION_ERROR", message: "Enter a valid email and password." } });
+      return;
+    }
+    try {
+      const result = await database.query<{
+        user_id: string;
+        full_name: string;
+        normalized_email: string;
+        password_hash: string;
+        roles: string[];
+      }>(
+        "SELECT u.user_id, u.full_name, u.normalized_email, u.password_hash, " +
+        "COALESCE(array_agg(DISTINCT r.role_key) FILTER (WHERE r.role_key IS NOT NULL), ARRAY[]::text[]) AS roles " +
+        "FROM waste_mgmt.users u " +
+        "LEFT JOIN waste_mgmt.user_roles ur ON ur.user_id=u.user_id " +
+        "LEFT JOIN waste_mgmt.roles r ON r.role_id=ur.role_id " +
+        "WHERE u.normalized_email=$1 AND u.status='active' GROUP BY u.user_id",
+        [body.data.email.toLowerCase()]
+      );
+      const user = result.rows[0];
+      if (!user || !(await verifyPassword(user.password_hash, body.data.password))) {
+        res.status(401).json({ error: { code: "INVALID_CREDENTIALS", message: "Email or password is incorrect." } });
+        return;
+      }
+
+      const token = randomBytes(32).toString("base64url");
+      const tokenHash = createHash("sha256").update(token).digest("hex");
+      const client = await database.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query(
+          "INSERT INTO waste_mgmt.sessions(user_id,token_hash,expires_at) VALUES ($1,$2,now()+interval '8 hours')",
+          [user.user_id, tokenHash]
+        );
+        await client.query("COMMIT");
+      } catch (error) {
+        await client.query("ROLLBACK").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+
+      const secure = env.NODE_ENV === "production" ? "; Secure" : "";
+      res.setHeader("Set-Cookie", "wm_session=" + token + "; Path=/api/v1; HttpOnly; SameSite=Lax; Max-Age=28800" + secure);
+      res.status(200).json({
+        data: {
+          user: { userId: user.user_id, fullName: user.full_name, email: user.normalized_email, roles: user.roles },
+          expiresInSeconds: 28800
+        }
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/v1/auth/logout", async (req, res, next) => {
+    const token = readSessionToken(req);
+    try {
+      if (token) {
+        const tokenHash = createHash("sha256").update(token).digest("hex");
+        await database.query(
+          "UPDATE waste_mgmt.sessions SET revoked_at=now() WHERE token_hash=$1 AND revoked_at IS NULL",
+          [tokenHash]
+        );
+      }
+      const secure = env.NODE_ENV === "production" ? "; Secure" : "";
+      res.setHeader("Set-Cookie", "wm_session=; Path=/api/v1; HttpOnly; SameSite=Lax; Max-Age=0" + secure);
+      res.status(200).json({ data: { signedOut: true } });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/v1/auth/me", authenticate(database), (req, res) => {
+    if (!req.auth) {
+      res.status(401).json({ error: { code: "UNAUTHENTICATED", message: "Sign in to continue." } });
+      return;
+    }
+    res.status(200).json({ data: { user: req.auth } });
   });
 
   app.get("/api/v1/public/form-options", async (_req, res, next) => {
