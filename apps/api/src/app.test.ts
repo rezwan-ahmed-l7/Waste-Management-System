@@ -11,6 +11,7 @@ function fakeDatabase() {
     query: vi.fn(async (sql: string) => {
       if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK") return { rows: [], rowCount: 0 };
       if (sql.includes("SELECT area_id")) return { rows: [{ area_id: "5f4b1c0e-0d34-4b22-9e2c-2b28e7f8b6d1" }], rowCount: 1 };
+      if (sql.includes("SELECT category_id")) return { rows: [{ category_id: 1 }], rowCount: 1 };
       if (sql.includes("INSERT INTO waste_mgmt.waste_reports")) return { rows: [{ report_id: "e6f9b8b0-7f1b-4d5f-ae83-5e4d20c0a1a2", submitted_at: new Date("2026-11-21T00:00:00Z") }], rowCount: 1 };
       return { rows: [], rowCount: 1 };
     }),
