@@ -1,4 +1,5 @@
 import js from "@eslint/js";
+import globals from "globals";
 import tseslint from "typescript-eslint";
 
 export default tseslint.config(
@@ -8,9 +9,15 @@ export default tseslint.config(
   {
     files: ["**/*.ts", "**/*.tsx"],
     languageOptions: {
-      parserOptions: {
-        ecmaFeatures: { jsx: true }
-      }
+      globals: { ...globals.node, ...globals.browser },
+      parserOptions: { ecmaFeatures: { jsx: true } }
+    },
+    rules: {
+      "@typescript-eslint/no-unused-vars": ["error", {
+        argsIgnorePattern: "^_",
+        varsIgnorePattern: "^_",
+        caughtErrorsIgnorePattern: "^_"
+      }]
     }
   }
 );
