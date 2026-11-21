@@ -42,8 +42,8 @@ ORDER BY volume_rank, zone;
 
 -- 5. Verified collected weight by category. Unverified submissions are excluded.
 SELECT wc.name AS category,
-       COALESCE(SUM(cr.weight_kg), 0) AS verified_weight_kg,
-       COUNT(cr.collection_record_id) AS verified_records
+       COALESCE(SUM(cr.weight_kg) FILTER (WHERE cs.status = 'verified'), 0) AS verified_weight_kg,
+       COUNT(cr.collection_record_id) FILTER (WHERE cs.status = 'verified') AS verified_records
 FROM waste_categories wc
 LEFT JOIN collection_records cr ON cr.category_id = wc.category_id
 LEFT JOIN collection_submissions cs
@@ -62,15 +62,25 @@ GROUP BY DATE(cr.measured_at)
 ORDER BY collection_day;
 
 -- 7. Task workload by volunteer (direct and team assignment).
+WITH user_task_assignments AS (
+  SELECT ta.user_id, ta.task_id
+  FROM task_assignments ta
+  WHERE ta.user_id IS NOT NULL AND ta.unassigned_at IS NULL
+  UNION
+  SELECT tm.user_id, ta.task_id
+  FROM task_assignments ta
+  JOIN team_memberships tm
+    ON tm.team_id = ta.team_id AND tm.ends_at IS NULL AND tm.starts_at <= now()
+  WHERE ta.team_id IS NOT NULL AND ta.unassigned_at IS NULL
+)
 SELECT u.user_id, u.full_name,
-       COUNT(DISTINCT ta.task_id) FILTER (
+       COUNT(DISTINCT uta.task_id) FILTER (
          WHERE t.status NOT IN ('verified', 'cancelled')
        ) AS active_tasks,
-       COUNT(DISTINCT ta.task_id) FILTER (WHERE t.status = 'verified') AS verified_tasks
+       COUNT(DISTINCT uta.task_id) FILTER (WHERE t.status = 'verified') AS verified_tasks
 FROM users u
-LEFT JOIN task_assignments ta
-  ON ta.user_id = u.user_id AND ta.unassigned_at IS NULL
-LEFT JOIN collection_tasks t ON t.task_id = ta.task_id
+LEFT JOIN user_task_assignments uta ON uta.user_id = u.user_id
+LEFT JOIN collection_tasks t ON t.task_id = uta.task_id
 WHERE u.status = 'active'
 GROUP BY u.user_id, u.full_name
 ORDER BY active_tasks DESC, verified_tasks DESC;
