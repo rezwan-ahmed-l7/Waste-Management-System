@@ -52,6 +52,7 @@ describe("public reporting API", () => {
     expect(response.body.data.reportId).toBe("e6f9b8b0-7f1b-4d5f-ae83-5e4d20c0a1a2");
     expect(response.body.data.trackingToken).toMatch(/^[A-Za-z0-9_-]{40,}$/);
     expect(fake.client.query).toHaveBeenCalledWith("COMMIT");
+    expect(fake.client.query.mock.calls.some(([sql]) => String(sql).includes("set_config('app.request_id'"))).toBe(true);
     expect(fake.client.release).toHaveBeenCalled();
   });
 
