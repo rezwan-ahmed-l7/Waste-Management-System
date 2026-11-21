@@ -147,3 +147,13 @@ h1 { max-width: 720px; margin: 14px 0 18px; font-size: clamp(38px, 6vw, 64px); l
 .roundForm button, .roundForm .error { grid-column:1/-1; }
 @media(max-width:900px){.materialForms{grid-template-columns:1fr 1fr}.roundForm{grid-template-columns:1fr 1fr}}
 @media(max-width:600px){.materialForms,.roundForm{grid-template-columns:1fr}}
+
+.festSettingsForm { display:grid; grid-template-columns:repeat(2,1fr); gap:12px; box-shadow:none; }
+.festSettingsForm label { display:grid; gap:6px; font-size:12px; font-weight:700; }
+.festSettingsForm input,.festSettingsForm select,.festSettingsForm textarea { width:100%; padding:10px; border:1px solid var(--line); border-radius:8px; }
+.festSettingsForm button,.festSettingsForm .error { grid-column:1/-1; }
+.auditRow { display:flex; justify-content:space-between; gap:18px; padding:14px 16px; border:1px solid var(--line); border-radius:12px; margin:8px 0; background:#fff; }
+.auditRow p { margin:6px 0; font-size:11px; }
+.auditMeta { display:grid; justify-items:end; gap:5px; max-width:50%; font-size:11px; color:var(--muted); }
+.auditMeta code { white-space:pre-wrap; overflow-wrap:anywhere; text-align:right; }
+@media(max-width:700px){.festSettingsForm{grid-template-columns:1fr}.auditRow{flex-direction:column}.auditMeta{max-width:100%;justify-items:start}.auditMeta code{text-align:left}}
