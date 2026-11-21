@@ -1,0 +1,17 @@
+{
+  "name": "baust-cse-fest-waste-management",
+  "version": "1.0.0",
+  "private": true,
+  "engines": { "node": ">=24.0.0" },
+  "workspaces": ["apps/api", "apps/web", "packages/contracts"],
+  "scripts": {
+    "dev": "npm run dev --workspace @waste/api",
+    "dev:api": "npm run dev --workspace @waste/api",
+    "dev:web": "npm run dev --workspace @waste/web",
+    "build": "npm run build --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspace @waste/api",
+    "lint": "npm run lint --workspaces --if-present",
+    "db:verify": "node scripts/verify-database.mjs"
+  }
+}
