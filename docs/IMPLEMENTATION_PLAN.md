@@ -18,9 +18,9 @@ Still requiring organizer confirmation before production: fest dates/map, final 
 Exit: documents agree on roles, status transitions, entity names, metrics, and API concepts; critical business rules are not contradictory.
 
 ### Phase 1 — Engineering foundation
-Deliver: Node 24.x TypeScript workspace, web/API scaffold, strict config, lint/format/typecheck scripts, PostgreSQL/Prisma connection, migrations, env validation, request IDs, safe errors/logging, health/readiness endpoints, CI.
+Deliver: Node 24.x TypeScript workspace, web/API scaffold, strict config, lint/typecheck scripts, PostgreSQL schema, environment validation, safe errors, health/readiness endpoints, CI and a first anonymous-reporting vertical slice.
 
-Exit: clean install from lockfile, CI passes on fresh checkout, migrations run on clean PostgreSQL, no secrets committed.
+Exit: clean install from a committed lockfile, CI passes on fresh checkout, schema and smoke tests run on clean PostgreSQL, no secrets committed.
 
 ### Phase 2 — Identity and access
 Deliver: users/roles/permissions/sessions, secure login/logout/me, password hashing, session rotation/revocation, server permission middleware, admin user management.
@@ -119,6 +119,14 @@ A feature is done only when requirements and permissions are documented; UI/API/
 - [x] Confirm single-fest scope, anonymous reporting, and English database identifiers.
 - [x] Confirm single-branch delivery policy.
 - [ ] Confirm remaining operational details before production.
+
+### Phase 1 — Foundation progress
+- [x] Add PostgreSQL relational schema, reference data, indexes, views and integrity triggers.
+- [x] Add transactional database smoke-test script and CI PostgreSQL service.
+- [x] Add Node/TypeScript workspaces, Express API, Next.js web scaffold and shared Zod contract.
+- [x] Add public anonymous report submission and private token status endpoint.
+- [ ] Commit npm lockfile and pass clean-install CI.
+- [ ] Execute schema and smoke tests in CI; resolve any SQL/runtime failures.
 
 ### Later phases
 Not started. Do not mark a phase complete until its exit-gate evidence exists.
