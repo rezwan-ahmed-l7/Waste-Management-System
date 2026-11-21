@@ -28,6 +28,7 @@ function EvidenceForm({ taskId, categories, onDone }: { taskId: string; categori
   const [categoryId,setCategoryId] = useState(String(categories[0]?.categoryId ?? ""));
   const [weight,setWeight] = useState("");
   const [method,setMethod] = useState("weighing_scale");
+  const [attachments,setAttachments] = useState<File[]>([]);
   const [error,setError] = useState("");
   const [saving,setSaving] = useState(false);
 
@@ -36,7 +37,7 @@ function EvidenceForm({ taskId, categories, onDone }: { taskId: string; categori
     setSaving(true);
     setError("");
     try {
-      await apiRequest("/tasks/"+taskId+"/submissions", {
+      const submission = await apiRequest("/tasks/"+taskId+"/submissions", {
         method: "POST",
         body: JSON.stringify({
           records: [{
@@ -47,7 +48,17 @@ function EvidenceForm({ taskId, categories, onDone }: { taskId: string; categori
           }]
         })
       });
+      if (attachments.length > 0) {
+        const formData = new FormData();
+        attachments.forEach(file => formData.append("attachments",file));
+        const response = await fetch(API+"/collection-submissions/"+submission.submissionId+"/photos",{
+          method:"POST",credentials:"include",body:formData
+        });
+        const payload = await response.json();
+        if(!response.ok) throw new Error(payload.error?.message ?? "Evidence upload failed.");
+      }
       setWeight("");
+      setAttachments([]);
       onDone();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Submission failed.");
@@ -65,6 +76,9 @@ function EvidenceForm({ taskId, categories, onDone }: { taskId: string; categori
       </label>
       <label>Collected weight (kg)
         <input type="number" min="0.001" step="0.001" required value={weight} onChange={event=>setWeight(event.target.value)} placeholder="e.g. 2.500" />
+      </label>
+      <label>Evidence photos or PDF (optional, up to 5 files · 5 MB each)
+        <input type="file" multiple accept="image/jpeg,image/png,image/webp,application/pdf" onChange={event=>setAttachments(Array.from(event.target.files??[]).slice(0,5))}/>
       </label>
       <label>Measurement method
         <select value={method} onChange={event=>setMethod(event.target.value)}>
