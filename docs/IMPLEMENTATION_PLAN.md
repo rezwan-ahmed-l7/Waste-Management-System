@@ -146,7 +146,7 @@ A feature is done only when requirements and permissions are documented; UI/API/
 - [x] Add public status timeline and public/internal manager notes.
 - [x] Add private report evidence uploads with content-signature checks and authorized downloads.
 - [x] Add manager-facing report evidence review UI and public/internal note controls.
-- [x] Add report-note schema regression and public tracking route privacy query tests remain to be added.
+- [x] Add report-note schema, anonymous tracking privacy, and final-report date-validation regression tests.
 - [ ] Add complete report lifecycle and tracking-token regression tests.
 
 ### Phase 5 — Workforce and collection progress
