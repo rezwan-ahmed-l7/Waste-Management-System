@@ -15,7 +15,7 @@ From the repository root:
 ```powershell
 psql -v ON_ERROR_STOP=1 -U postgres -d waste_management -f database/001_schema.sql
 ```
-The script creates the waste_mgmt schema, enum types, relational tables, keys, checks, indexes, triggers, views, and reference data.
+The script creates the waste_mgmt schema, enum types, relational tables, keys, checks, indexes, triggers, views, and reference data. For a local runtime role, set `POSTGRES_USER=postgres`, `POSTGRES_DB=waste_management`, and a strong `APP_DB_PASSWORD`, then run `bash database/002_grants.sh` from Git Bash. It creates a non-superuser `waste_app` role with schema usage and table/sequence DML privileges. Set the API `DATABASE_URL` to this role rather than using the PostgreSQL superuser.
 
 ## Verify
 ```sql
@@ -64,7 +64,7 @@ The suite demonstrates relational joins, left joins, aggregation, filtered aggre
 
 ## Backup and restore runbook
 
-Use a dedicated PostgreSQL role with the minimum required privileges. Store backups outside the repository on encrypted storage with access controls; never place credentials in command history or commit them.
+Use a dedicated PostgreSQL role with the minimum required privileges. The Compose deployment initializes `waste_app` as a non-superuser runtime role; the PostgreSQL superuser is reserved for initialization and backup. Store backups outside the repository on encrypted storage with access controls; never place credentials in command history or commit them.
 
 PowerShell example (run from the repository root; replace the destination with a protected backup directory):
 
@@ -81,7 +81,7 @@ createdb -h localhost -U postgres waste_management_restore_check
 pg_restore -h localhost -U postgres -d waste_management_restore_check --clean --if-exists "D:\Backups\waste_management.dump"
 ```
 
-After restore, run `npm run db:verify`, execute `database/002_smoke_test.sql`, and compare expected row counts and application behavior before accepting the backup. Back up the private evidence directory (or private object-storage bucket) consistently with the database; a database dump alone does not contain uploaded files. Define retention, encryption, off-site copies, RPO/RTO and restore ownership with the event operator. CI now performs a PostgreSQL custom-format dump, restores it into a separate disposable database, and reruns schema verification, smoke tests and reporting queries. This verifies database backup/restore mechanics; production retention, encrypted/off-site storage, and coordinated restore of private uploaded files still require an operator-owned drill.
+For the Compose deployment, `bash scripts/backup-compose.sh` archives the database and the private evidence volume into one timestamped directory and writes SHA-256 checksums. Copy it off-host. After restore, run `npm run db:verify`, execute `database/002_smoke_test.sql`, compare expected row counts, and confirm representative evidence files can be read through the authorized API before accepting the backup. Back up the private evidence directory (or private object-storage bucket) consistently with the database; a database dump alone does not contain uploaded files. Define retention, encryption, off-site copies, RPO/RTO and restore ownership with the event operator. CI now performs a PostgreSQL custom-format dump, restores it into a separate disposable database, and reruns schema verification, smoke tests and reporting queries. This verifies database backup/restore mechanics; production retention, encrypted/off-site storage, and coordinated restore of private uploaded files still require an operator-owned drill.
 
 ## Private evidence storage
 
