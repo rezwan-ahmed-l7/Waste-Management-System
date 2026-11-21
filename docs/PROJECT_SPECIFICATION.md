@@ -51,9 +51,9 @@ Report lifecycle: Submitted → Under Review → Accepted → In Progress → Re
 Configure zones, nested areas (stage, food court, exhibition, gaming, corridor, washroom, parking, etc.), categories, and bins. Track active status, bin type/category, area, capacity where known, and manual inspection observations. Deactivate rather than delete historical reference data.
 
 ### FR-04 Cleaning and tasks
-Managers create one-off or recurring cleaning rounds and standalone tasks, or tasks linked to accepted reports. A task can address several reports. Assign users and/or teams, set priority and due window, record progress, reassign/cancel/reopen with reason, and retain assignment/status history.
+Managers create one-off or recurring cleaning rounds and standalone tasks, or tasks linked to accepted reports. A task can address several reports. Assign users and/or teams, set priority and due window, record progress, reassign/cancel with reason, and retain assignment/status history.
 
-Task lifecycle: Draft → Open → Assigned → In Progress → Submitted for Verification → Verified. Rejected evidence returns to In Progress. Cancelled is terminal unless an Administrator reopens with an audit reason. Overdue is derived from due date, not a lifecycle status.
+Task lifecycle: Draft → Open → Assigned → In Progress → Submitted for Verification → Verified. Rejected evidence returns to In Progress. Cancelled is terminal. If work is needed again, an authorized Manager creates a replacement task and links the relevant report(s); the cancelled task remains in history. Overdue is derived from due date, not a lifecycle status.
 
 ### FR-05 Collection evidence
 Volunteer submits collection timestamp, one or more material/weight records, measurement method, notes, and optional photos. Use positive decimal weights and explicit unit conversion. A task may have multiple collection batches. Only accepted/verified records count in official totals. Corrections require a reason and preserve original values.
