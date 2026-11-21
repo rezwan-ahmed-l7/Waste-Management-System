@@ -1396,6 +1396,83 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
 
 
 
+
+  app.get("/api/v1/cleaning-rounds", authenticate(database), requirePermission(database, "tasks.read"), async (req,res,next)=>{
+    const auth=req.auth;
+    if(!auth){res.status(401).json({error:{code:"UNAUTHENTICATED",message:"Sign in to continue."}});return;}
+    try{
+      const scope=taskScope(auth.userId,auth.roles,1);
+      const result=await database.query(
+        "SELECT cr.round_id AS \"roundId\",cr.title,cr.instructions,cr.status,cr.planned_start_at AS \"plannedStartAt\", " +
+        "cr.planned_end_at AS \"plannedEndAt\",a.name AS \"areaName\",z.name AS \"zoneName\",COUNT(DISTINCT t.task_id)::int AS \"taskCount\" " +
+        "FROM waste_mgmt.cleaning_rounds cr JOIN waste_mgmt.areas a ON a.area_id=cr.area_id " +
+        "JOIN waste_mgmt.zones z ON z.zone_id=a.zone_id LEFT JOIN waste_mgmt.collection_tasks t ON t.round_id=cr.round_id " +
+        "WHERE cr.fest_id=1 AND (" +
+        (scope.sql==="TRUE" ? "TRUE" : "EXISTS (SELECT 1 FROM waste_mgmt.collection_tasks st WHERE st.round_id=cr.round_id AND "+scope.sql+")") +
+        ") GROUP BY cr.round_id,a.name,z.name ORDER BY cr.planned_start_at DESC",
+        scope.values
+      );
+      res.status(200).json({data:result.rows});
+    }catch(error){next(error);}
+  });
+
+  app.post("/api/v1/cleaning-rounds", authenticate(database), requirePermission(database, "tasks.manage"), async (req,res,next)=>{
+    const body=z.object({
+      areaId:z.string().uuid(),
+      title:z.string().trim().min(3).max(160),
+      instructions:z.string().trim().max(3000).optional(),
+      plannedStartAt:z.string().datetime(),
+      plannedEndAt:z.string().datetime()
+    }).strict().safeParse(req.body);
+    const auth=req.auth;
+    if(!body.success||!auth){res.status(400).json({error:{code:"VALIDATION_ERROR",message:"Invalid cleaning round details."}});return;}
+    if(new Date(body.data.plannedEndAt)<=new Date(body.data.plannedStartAt)){
+      res.status(422).json({error:{code:"INVALID_ROUND_WINDOW",message:"The planned end time must be after the start time."}});
+      return;
+    }
+    try{
+      const client=await database.connect();
+      try{
+        await client.query("BEGIN");
+        await client.query("SELECT set_config('app.actor_user_id',$1,true)",[auth.userId]);
+        const area=await client.query("SELECT area_id FROM waste_mgmt.areas WHERE area_id=$1 AND fest_id=1 AND is_active=TRUE",[body.data.areaId]);
+        if(area.rowCount!==1){
+          await client.query("ROLLBACK");
+          res.status(422).json({error:{code:"INVALID_AREA",message:"The selected area is not active."}});
+          return;
+        }
+        const result=await client.query(
+          "INSERT INTO waste_mgmt.cleaning_rounds(fest_id,area_id,title,instructions,planned_start_at,planned_end_at,created_by) " +
+          "VALUES (1,$1,$2,$3,$4,$5,$6) RETURNING round_id AS \"roundId\",title,status,planned_start_at AS \"plannedStartAt\",planned_end_at AS \"plannedEndAt\"",
+          [body.data.areaId,body.data.title,body.data.instructions??null,body.data.plannedStartAt,body.data.plannedEndAt,auth.userId]
+        );
+        await client.query("COMMIT");
+        res.status(201).json({data:result.rows[0]});
+      }catch(error){await client.query("ROLLBACK").catch(()=>undefined);throw error;}
+      finally{client.release();}
+    }catch(error){next(error);}
+  });
+
+  app.patch("/api/v1/cleaning-rounds/:roundId/status", authenticate(database), requirePermission(database, "tasks.manage"), async (req,res,next)=>{
+    const id=z.string().uuid().safeParse(req.params.roundId);
+    const body=z.object({status:z.enum(["draft","scheduled","active","completed","cancelled"])}).strict().safeParse(req.body);
+    if(!id.success||!body.success){res.status(400).json({error:{code:"VALIDATION_ERROR",message:"Invalid cleaning round status."}});return;}
+    const allowed:Record<string,string[]>={draft:["scheduled","cancelled"],scheduled:["active","cancelled"],active:["completed","cancelled"],completed:[],cancelled:[]};
+    try{
+      const current=await database.query("SELECT status FROM waste_mgmt.cleaning_rounds WHERE round_id=$1 AND fest_id=1",[id.data]);
+      if(!current.rows[0]){res.status(404).json({error:{code:"ROUND_NOT_FOUND",message:"Cleaning round not found."}});return;}
+      if(!allowed[String(current.rows[0].status)]?.includes(body.data.status)){
+        res.status(409).json({error:{code:"INVALID_ROUND_TRANSITION",message:"The cleaning round cannot move to the requested status."}});
+        return;
+      }
+      const result=await database.query(
+        "UPDATE waste_mgmt.cleaning_rounds SET status=$1 WHERE round_id=$2 RETURNING round_id AS \"roundId\",status",
+        [body.data.status,id.data]
+      );
+      res.status(200).json({data:result.rows[0]});
+    }catch(error){next(error);}
+  });
+
   app.get("/api/v1/materials/overview", authenticate(database), requirePermission(database, "materials.manage"), async (_req,res,next)=>{
     try{
       const [batches,segregations,destinations,allocations]=await Promise.all([
