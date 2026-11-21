@@ -414,6 +414,108 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
 
 
 
+
+  app.post("/api/v1/tasks/:taskId/close-no-waste", authenticate(database), requirePermission(database, "tasks.manage"), async (req, res, next) => {
+    const id = z.string().uuid().safeParse(req.params.taskId);
+    const body = z.object({ reason: z.string().trim().min(5).max(1000) }).strict().safeParse(req.body);
+    const auth = req.auth;
+    if (!id.success || !body.success || !auth) {
+      res.status(400).json({ error: { code: "VALIDATION_ERROR", message: "A task ID and closure reason are required." } });
+      return;
+    }
+    try {
+      const client = await database.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query("SELECT set_config('app.actor_user_id',$1,true)",[auth.userId]);
+        const task = await client.query(
+          "SELECT task_id,status FROM waste_mgmt.collection_tasks WHERE task_id=$1 AND fest_id=1 FOR UPDATE",
+          [id.data]
+        );
+        if (!task.rows[0]) {
+          await client.query("ROLLBACK");
+          res.status(404).json({ error: { code: "TASK_NOT_FOUND", message: "Task not found." } });
+          return;
+        }
+        if (task.rows[0].status !== "in_progress") {
+          await client.query("ROLLBACK");
+          res.status(409).json({ error: { code: "INVALID_TASK_STATE", message: "Only an in-progress task can be closed as no-waste." } });
+          return;
+        }
+        await client.query(
+          "UPDATE waste_mgmt.collection_tasks SET status='verified',verified_by=$1,verified_at=now(),completed_at=now(),closure_reason=$2 WHERE task_id=$3",
+          [auth.userId,body.data.reason,id.data]
+        );
+        await client.query(
+          "UPDATE waste_mgmt.waste_reports r SET status='resolved' FROM waste_mgmt.report_task_links rtl " +
+          "WHERE rtl.task_id=$1 AND rtl.report_id=r.report_id AND rtl.link_type='primary' AND rtl.ended_at IS NULL AND r.status='in_progress'",
+          [id.data]
+        );
+        await client.query(
+          "UPDATE waste_mgmt.report_task_links SET ended_at=now() WHERE task_id=$1 AND link_type='primary' AND ended_at IS NULL",
+          [id.data]
+        );
+        await client.query("COMMIT");
+        res.status(200).json({ data: { taskId: id.data, status: "verified", closureReason: body.data.reason } });
+      } catch (error) {
+        await client.query("ROLLBACK").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/v1/tasks/:taskId/cancel", authenticate(database), requirePermission(database, "tasks.manage"), async (req, res, next) => {
+    const id = z.string().uuid().safeParse(req.params.taskId);
+    const body = z.object({ reason: z.string().trim().min(5).max(1000) }).strict().safeParse(req.body);
+    const auth = req.auth;
+    if (!id.success || !body.success || !auth) {
+      res.status(400).json({ error: { code: "VALIDATION_ERROR", message: "A task ID and cancellation reason are required." } });
+      return;
+    }
+    try {
+      const client = await database.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query("SELECT set_config('app.actor_user_id',$1,true)",[auth.userId]);
+        const task = await client.query(
+          "SELECT task_id,status FROM waste_mgmt.collection_tasks WHERE task_id=$1 AND fest_id=1 FOR UPDATE",
+          [id.data]
+        );
+        if (!task.rows[0]) {
+          await client.query("ROLLBACK");
+          res.status(404).json({ error: { code: "TASK_NOT_FOUND", message: "Task not found." } });
+          return;
+        }
+        if (["verified","cancelled"].includes(task.rows[0].status)) {
+          await client.query("ROLLBACK");
+          res.status(409).json({ error: { code: "TERMINAL_TASK", message: "Verified or cancelled tasks cannot be cancelled again." } });
+          return;
+        }
+        await client.query(
+          "UPDATE waste_mgmt.collection_tasks SET status='cancelled',cancelled_at=now(),cancellation_reason=$1 WHERE task_id=$2",
+          [body.data.reason,id.data]
+        );
+        await client.query(
+          "UPDATE waste_mgmt.report_task_links SET ended_at=now() WHERE task_id=$1 AND link_type='primary' AND ended_at IS NULL",
+          [id.data]
+        );
+        await client.query("COMMIT");
+        res.status(200).json({ data: { taskId: id.data, status: "cancelled" } });
+      } catch (error) {
+        await client.query("ROLLBACK").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.post("/api/v1/collection-submissions/:submissionId/decision", authenticate(database), requirePermission(database, "collections.verify"), async (req, res, next) => {
     const id = z.string().uuid().safeParse(req.params.submissionId);
     const body = z.object({
@@ -674,7 +776,7 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
             [body.data.reportId]
           );
           const row = report.rows[0];
-          if (!row || row.status !== "accepted" || row.area_id !== body.data.areaId) {
+          if (!row || !["accepted","in_progress"].includes(row.status) || row.area_id !== body.data.areaId) {
             await client.query("ROLLBACK");
             res.status(409).json({ error: { code: "REPORT_NOT_ACTIONABLE", message: "Only an accepted report in the same area can create a primary collection task." } });
             return;
@@ -712,10 +814,12 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
             "INSERT INTO waste_mgmt.report_task_links(report_id,task_id,link_type,linked_by) VALUES ($1,$2,'primary',$3)",
             [body.data.reportId,task.taskId,req.auth.userId]
           );
-          await client.query(
-            "UPDATE waste_mgmt.waste_reports SET status='in_progress' WHERE report_id=$1",
-            [body.data.reportId]
-          );
+          if (row.status === "accepted") {
+            await client.query(
+              "UPDATE waste_mgmt.waste_reports SET status='in_progress' WHERE report_id=$1",
+              [body.data.reportId]
+            );
+          }
         }
         if (body.data.assignedUserId || body.data.assignedTeamId) {
           await client.query(
