@@ -110,7 +110,7 @@ The final fest report is generated for a required local date range, uses the con
 - Cookie-authenticated mutations reject a mismatched Origin; the session cookie is HttpOnly and SameSite=Lax. Validate browser deployment topology and add an explicit CSRF token if the web/API origin model changes.
 - CORS allows configured origins only; never wildcard with credentials.
 - Hash passwords using maintained Argon2id implementation and reviewed parameters.
-- Rate-limit login and anonymous report submission. Add dedicated per-user upload throttling and production edge-level abuse controls before public launch.
+- Rate-limit login, anonymous report submission, and authenticated evidence uploads (per source IP). Configure trusted proxy handling and production edge-level abuse controls deliberately before public launch.
 - Validate every request field and uploaded file; encode untrusted output.
 - Image uploads: allowlisted formats, inspect actual content type, enforce byte/dimension limits, server-generated names, private non-executable storage.
 - Evidence access is authorized; do not expose permanent public file URLs.
@@ -126,11 +126,11 @@ Audit is append-only at application level; corrections create compensating event
 
 ## 9. File storage
 
-Application code uses a storage adapter, not provider-specific calls. Development currently uses a private local directory. Production still requires a persistent private volume or a reviewed private object-storage adapter; public/static file serving is not supported. PostgreSQL stores metadata (owner, resource, key, MIME type, size, checksum, created time), not image binaries.
+Application code uses a storage adapter, not provider-specific calls. Development currently uses a private local directory. The Docker Compose starter mounts a persistent private evidence volume; alternative hosts require an equivalent persistent private volume or a reviewed private object-storage adapter. Public/static file serving is not supported. PostgreSQL stores metadata (owner, resource, key, MIME type, size, checksum, created time), not image binaries.
 
 ## 10. Configuration and operations
 
-Validate environment variables at startup and fail fast with safe messages. Commit .env.example only with placeholders. Current config includes DATABASE_URL, API_HOST/API_PORT, WEB_ORIGIN, NEXT_PUBLIC_API_BASE_URL, PRIVATE_STORAGE_DIR and public-report rate limits. Session tokens are random and stored only as hashes; no static session secret is required. Production must not silently fall back to insecure auth or public storage.
+Validate environment variables at startup and fail fast with safe messages. Commit .env.example only with placeholders. Current config includes DATABASE_URL, API_HOST/API_PORT, WEB_ORIGIN, NEXT_PUBLIC_API_BASE_URL, PRIVATE_STORAGE_DIR and public-report rate limits. Session tokens are random and stored only as hashes; no static session secret is required. The Docker Compose starter is a single-host Caddy/PostgreSQL deployment template. Production must not silently fall back to insecure auth or public storage.
 
 Use structured logs with request IDs; health and readiness endpoints; avoid logging report text, personal details, cookies, secrets, or file content. Document backup/restore and test restore before production.
 
