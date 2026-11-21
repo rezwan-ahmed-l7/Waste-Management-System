@@ -1397,28 +1397,30 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
     }
     try {
       const scope = taskScope(auth.userId, auth.roles, 2);
-      const current = await database.query(
-        "SELECT t.task_id,t.status FROM waste_mgmt.collection_tasks t " +
-        "WHERE t.task_id=$1 AND t.fest_id=1 AND " + scope.sql,
-        [id.data,...scope.values]
-      );
-      const task = current.rows[0];
-      if (!task) {
+      const result = await auditedMutation(database,req,res,async client => {
+        const current = await client.query(
+          "SELECT t.task_id,t.status FROM waste_mgmt.collection_tasks t " +
+          "WHERE t.task_id=$1 AND t.fest_id=1 AND " + scope.sql + " FOR UPDATE",
+          [id.data,...scope.values]
+        );
+        const task = current.rows[0];
+        if (!task) return "missing" as const;
+        if (task.status === "in_progress") return "started" as const;
+        if (task.status !== "assigned") return "invalid" as const;
+        await client.query(
+          "UPDATE waste_mgmt.collection_tasks SET status='in_progress', started_at=COALESCE(started_at,now()) WHERE task_id=$1",
+          [id.data]
+        );
+        return "started" as const;
+      });
+      if (result === "missing") {
         res.status(404).json({ error: { code: "TASK_NOT_FOUND", message: "Task not found." } });
         return;
       }
-      if (task.status === "in_progress") {
-        res.status(200).json({ data: { taskId: id.data, status: "in_progress" } });
-        return;
-      }
-      if (task.status !== "assigned") {
+      if (result === "invalid") {
         res.status(409).json({ error: { code: "INVALID_TASK_STATE", message: "Only assigned tasks can be started." } });
         return;
       }
-      await database.query(
-        "UPDATE waste_mgmt.collection_tasks SET status='in_progress', started_at=COALESCE(started_at,now()) WHERE task_id=$1",
-        [id.data]
-      );
       res.status(200).json({ data: { taskId: id.data, status: "in_progress" } });
     } catch (error) {
       next(error);
