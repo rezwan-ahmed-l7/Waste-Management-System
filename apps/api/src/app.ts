@@ -1,0 +1,2465 @@
+import express, { type ErrorRequestHandler } from "express";
+import multer from "multer";
+import cors from "cors";
+import helmet from "helmet";
+import { rateLimit } from "express-rate-limit";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { z } from "zod";
+import { publicWasteReportSchema } from "@waste/contracts";
+import type { Pool, PoolClient } from "pg";
+import { env } from "./config.js";
+import argon2 from "argon2";
+import { authenticate, readSessionToken, requirePermission } from "./auth.js";
+import { privateUpload, storePrivateUpload, readPrivateUpload, removePrivateUpload, UnsupportedUploadError } from "./storage.js";
+
+type Database = Pick<Pool, "query" | "connect">;
+type DatabaseClient = PoolClient;
+
+async function auditedMutation<T>(
+  database: Database,
+  req: express.Request,
+  res: express.Response,
+  action: (client: DatabaseClient) => Promise<T>
+): Promise<T> {
+  const client = await database.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      "SELECT set_config('app.actor_user_id',$1,true),set_config('app.request_id',$2,true)",
+      [req.auth?.userId ?? "", res.locals.requestId]
+    );
+    const result = await action(client);
+    await client.query("COMMIT");
+    return result;
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export function createApp(database: Database, verifyPassword: (hash: string, password: string) => Promise<boolean> = argon2.verify) {
+  const app = express();
+  app.disable("x-powered-by");
+  app.set("trust proxy", env.TRUST_PROXY_HOPS);
+  app.use((_req, res, next) => {
+    const requestId = randomUUID();
+    res.setHeader("x-request-id", requestId);
+    res.locals.requestId = requestId;
+    next();
+  });
+  app.use(helmet());
+  app.use(cors({ origin: env.WEB_ORIGIN, credentials: true }));
+  app.use(express.json({ limit: "64kb" }));
+  app.use((req, res, next) => {
+    const origin = req.header("origin");
+    const isMutation = ["POST", "PUT", "PATCH", "DELETE"].includes(req.method);
+    if (isMutation && origin && origin !== env.WEB_ORIGIN) {
+      res.status(403).json({ error: { code: "UNTRUSTED_ORIGIN", message: "Request origin is not allowed." } });
+      return;
+    }
+    next();
+  });
+
+
+  const loginLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    limit: 8,
+    standardHeaders: "draft-8",
+    legacyHeaders: false,
+    handler: (_req, res) => {
+      res.status(429).json({ error: { code: "RATE_LIMITED", message: "Too many sign-in attempts. Try again later." } });
+    }
+  });
+
+  const publicReportLimiter = rateLimit({
+    windowMs: env.PUBLIC_REPORT_RATE_LIMIT_WINDOW_MS,
+    limit: env.PUBLIC_REPORT_RATE_LIMIT_MAX,
+    standardHeaders: "draft-8",
+    legacyHeaders: false,
+    handler: (_req, res) => {
+      res.status(429).json({ error: { code: "RATE_LIMITED", message: "Too many reports. Please try again later." } });
+    }
+  });
+  
+  const evidenceUploadLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    limit: 10,
+    standardHeaders: "draft-8",
+    legacyHeaders: false,
+    handler: (_req, res) => {
+      res.status(429).json({ error: { code: "UPLOAD_RATE_LIMITED", message: "Too many evidence uploads. Try again later." } });
+    }
+  });
+
+
+  app.post("/api/v1/auth/login", loginLimiter, async (req, res, next) => {
+    const body = z.object({
+      email: z.string().trim().email().max(254),
+      password: z.string().min(1).max(128)
+    }).strict().safeParse(req.body);
+    if (!body.success) {
+      res.status(400).json({ error: { code: "VALIDATION_ERROR", message: "Enter a valid email and password." } });
+      return;
+    }
+    try {
+      const result = await database.query<{
+        user_id: string;
+        full_name: string;
+        normalized_email: string;
+        password_hash: string;
+        roles: string[];
+      }>(
+        "SELECT u.user_id, u.full_name, u.normalized_email, u.password_hash, " +
+        "COALESCE(array_agg(DISTINCT r.role_key) FILTER (WHERE r.role_key IS NOT NULL), ARRAY[]::text[]) AS roles " +
+        "FROM waste_mgmt.users u " +
+        "LEFT JOIN waste_mgmt.user_roles ur ON ur.user_id=u.user_id " +
+        "LEFT JOIN waste_mgmt.roles r ON r.role_id=ur.role_id " +
+        "WHERE u.normalized_email=$1 AND u.status='active' GROUP BY u.user_id",
+        [body.data.email.toLowerCase()]
+      );
+      const user = result.rows[0];
+      if (!user || !(await verifyPassword(user.password_hash, body.data.password))) {
+        res.status(401).json({ error: { code: "INVALID_CREDENTIALS", message: "Email or password is incorrect." } });
+        return;
+      }
+
+      const token = randomBytes(32).toString("base64url");
+      const tokenHash = createHash("sha256").update(token).digest("hex");
+      const client = await database.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query("SELECT set_config('app.actor_user_id',$1,true),set_config('app.request_id',$2,true)",[req.auth?.userId ?? "",res.locals.requestId]);
+        await client.query(
+          "INSERT INTO waste_mgmt.sessions(user_id,token_hash,expires_at) VALUES ($1,$2,now()+interval '8 hours')",
+          [user.user_id, tokenHash]
+        );
+        await client.query("COMMIT");
+      } catch (error) {
+        await client.query("ROLLBACK").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+
+      const secure = env.NODE_ENV === "production" ? "; Secure" : "";
+      res.setHeader("Set-Cookie", "wm_session=" + token + "; Path=/api/v1; HttpOnly; SameSite=Lax; Max-Age=28800" + secure);
+      res.status(200).json({
+        data: {
+          user: { userId: user.user_id, fullName: user.full_name, email: user.normalized_email, roles: user.roles },
+          expiresInSeconds: 28800
+        }
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/v1/auth/logout", async (req, res, next) => {
+    const token = readSessionToken(req);
+    try {
+      if (token) {
+        const tokenHash = createHash("sha256").update(token).digest("hex");
+        await database.query(
+          "UPDATE waste_mgmt.sessions SET revoked_at=now() WHERE token_hash=$1 AND revoked_at IS NULL",
+          [tokenHash]
+        );
+      }
+      const secure = env.NODE_ENV === "production" ? "; Secure" : "";
+      res.setHeader("Set-Cookie", "wm_session=; Path=/api/v1; HttpOnly; SameSite=Lax; Max-Age=0" + secure);
+      res.status(200).json({ data: { signedOut: true } });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/v1/auth/me", authenticate(database), (req, res) => {
+    if (!req.auth) {
+      res.status(401).json({ error: { code: "UNAUTHENTICATED", message: "Sign in to continue." } });
+      return;
+    }
+    res.status(200).json({ data: { user: req.auth } });
+  });
+
+
+  const reportRead = [authenticate(database), requirePermission(database, "reports.read")];
+
+  app.get("/api/v1/reports", ...reportRead, async (req, res, next) => {
+    const filters = z.object({
+      status: z.enum(["submitted","under_review","accepted","in_progress","resolved","rejected","duplicate","cancelled"]).optional(),
+      areaId: z.string().uuid().optional(),
+      categoryId: z.coerce.number().int().positive().optional(),
+      page: z.coerce.number().int().min(1).default(1),
+      pageSize: z.coerce.number().int().min(1).max(100).default(20)
+    }).safeParse(req.query);
+    if (!filters.success) {
+      res.status(400).json({ error: { code: "VALIDATION_ERROR", message: "Invalid report filters." } });
+      return;
+    }
+    try {
+      const conditions = ["r.fest_id=1"];
+      const values: (string | number)[] = [];
+      if (filters.data.status) {
+        values.push(filters.data.status);
+        conditions.push("r.status=$" + values.length);
+      }
+      if (filters.data.areaId) {
+        values.push(filters.data.areaId);
+        conditions.push("r.area_id=$" + values.length);
+      }
+      if (filters.data.categoryId) {
+        values.push(filters.data.categoryId);
+        conditions.push("r.category_id=$" + values.length);
+      }
+      const where = conditions.join(" AND ");
+      const count = await database.query(
+        "SELECT COUNT(*)::int AS total FROM waste_mgmt.waste_reports r WHERE " + where,
+        values
+      );
+      const offset = (filters.data.page - 1) * filters.data.pageSize;
+      const pageValues = [...values, filters.data.pageSize, offset];
+      const result = await database.query(
+        "SELECT r.report_id AS \"reportId\", r.status, r.priority, r.is_anonymous AS \"isAnonymous\", " +
+        "r.submitted_at AS \"submittedAt\", r.updated_at AS \"updatedAt\", r.description, a.area_id AS \"areaId\", " +
+        "a.name AS \"areaName\", z.name AS \"zoneName\", wc.name AS \"categoryName\" " +
+        "FROM waste_mgmt.waste_reports r " +
+        "JOIN waste_mgmt.areas a ON a.area_id=r.area_id " +
+        "JOIN waste_mgmt.zones z ON z.zone_id=a.zone_id " +
+        "JOIN waste_mgmt.waste_categories wc ON wc.category_id=r.category_id " +
+        "WHERE " + where + " ORDER BY r.submitted_at DESC LIMIT $" + (values.length + 1) +
+        " OFFSET $" + (values.length + 2),
+        pageValues
+      );
+      res.status(200).json({
+        data: result.rows,
+        meta: {
+          page: filters.data.page,
+          pageSize: filters.data.pageSize,
+          total: count.rows[0]?.total ?? 0
+        }
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/v1/reports/:reportId", ...reportRead, async (req, res, next) => {
+    const reportId = z.string().uuid().safeParse(req.params.reportId);
+    if (!reportId.success) {
+      res.status(404).json({ error: { code: "REPORT_NOT_FOUND", message: "Report not found." } });
+      return;
+    }
+    try {
+      const result = await database.query(
+        "SELECT r.report_id AS \"reportId\", r.status, r.priority, r.is_anonymous AS \"isAnonymous\", " +
+        "r.reporter_name AS \"reporterName\", r.reporter_contact AS \"reporterContact\", " +
+        "r.description, r.submitted_at AS \"submittedAt\", r.updated_at AS \"updatedAt\", " +
+        "r.review_reason AS \"reviewReason\", r.canonical_report_id AS \"canonicalReportId\", " +
+        "a.area_id AS \"areaId\", a.name AS \"areaName\", z.name AS \"zoneName\", " +
+        "wc.name AS \"categoryName\" " +
+        "FROM waste_mgmt.waste_reports r " +
+        "JOIN waste_mgmt.areas a ON a.area_id=r.area_id " +
+        "JOIN waste_mgmt.zones z ON z.zone_id=a.zone_id " +
+        "JOIN waste_mgmt.waste_categories wc ON wc.category_id=r.category_id " +
+        "WHERE r.report_id=$1 AND r.fest_id=1",
+        [reportId.data]
+      );
+      const report = result.rows[0];
+      if (!report) {
+        res.status(404).json({ error: { code: "REPORT_NOT_FOUND", message: "Report not found." } });
+        return;
+      }
+      const canReview = req.auth?.roles.some(role => ["administrator","waste_manager"].includes(role)) ?? false;
+      if (!canReview) {
+        delete report.reporterName;
+        delete report.reporterContact;
+        delete report.reviewReason;
+      }
+      const [history, notes] = await Promise.all([
+        database.query(
+          "SELECT from_status AS \"fromStatus\", to_status AS \"toStatus\", reason, changed_at AS \"changedAt\" " +
+          "FROM waste_mgmt.report_status_history WHERE report_id=$1 " +
+          (canReview ? "" : "AND is_public=TRUE ") + "ORDER BY changed_at",
+          [reportId.data]
+        ),
+        database.query(
+          "SELECT body, visibility, created_at AS \"createdAt\" FROM waste_mgmt.report_notes " +
+          "WHERE report_id=$1 " + (canReview ? "" : "AND visibility='public' ") + "ORDER BY created_at",
+          [reportId.data]
+        )
+      ]);
+      res.status(200).json({ data: { ...report, history: history.rows, notes: notes.rows } });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+
+
+
+  app.get("/api/v1/reports/:reportId/attachments", authenticate(database), requirePermission(database, "reports.review"), async (req,res,next)=>{
+    const id=z.string().uuid().safeParse(req.params.reportId);
+    if(!id.success){res.status(404).json({error:{code:"REPORT_NOT_FOUND",message:"Report not found."}});return;}
+    try{
+      const result=await database.query(
+        "SELECT attachment_id AS \"attachmentId\",original_file_name AS \"fileName\",media_type AS \"mediaType\",file_size_bytes AS \"fileSizeBytes\",uploaded_at AS \"uploadedAt\" " +
+        "FROM waste_mgmt.report_attachments WHERE report_id=$1 ORDER BY uploaded_at",
+        [id.data]
+      );
+      res.status(200).json({data:result.rows});
+    }catch(error){next(error);}
+  });
+
+  app.get("/api/v1/reports/:reportId/attachments/:attachmentId", authenticate(database), requirePermission(database, "reports.review"), async (req,res,next)=>{
+    const reportId=z.string().uuid().safeParse(req.params.reportId);
+    const attachmentId=z.string().uuid().safeParse(req.params.attachmentId);
+    if(!reportId.success||!attachmentId.success){res.status(404).json({error:{code:"ATTACHMENT_NOT_FOUND",message:"Attachment not found."}});return;}
+    try{
+      const result=await database.query(
+        "SELECT storage_key AS \"storageKey\" FROM waste_mgmt.report_attachments WHERE report_id=$1 AND attachment_id=$2",
+        [reportId.data,attachmentId.data]
+      );
+      const key=result.rows[0]?.storageKey;
+      if(!key){res.status(404).json({error:{code:"ATTACHMENT_NOT_FOUND",message:"Attachment not found."}});return;}
+      const file=await readPrivateUpload(key);
+      res.setHeader("Content-Type",file.mediaType);
+      res.setHeader("Content-Length",String(file.buffer.byteLength));
+      res.setHeader("Content-Disposition","attachment; filename=\"report-evidence-"+attachmentId.data+"."+file.extension+"\"");
+      res.setHeader("X-Content-Type-Options","nosniff");
+      res.setHeader("Cache-Control","private, no-store");
+      res.status(200).send(file.buffer);
+    }catch(error){next(error);}
+  });
+
+  app.post("/api/v1/collection-submissions/:submissionId/photos", authenticate(database), requirePermission(database, "collections.submit"), evidenceUploadLimiter, privateUpload.array("attachments",5), async (req,res,next)=>{
+    const id=z.string().uuid().safeParse(req.params.submissionId);
+    const auth=req.auth;
+    const files=Array.isArray(req.files)?req.files:[];
+    if(!id.success||!auth||files.length===0){res.status(400).json({error:{code:"VALIDATION_ERROR",message:"Choose at least one photo or PDF attachment."}});return;}
+    const savedKeys:string[]=[];
+    const client=await database.connect();
+    try{
+      await client.query("BEGIN");
+        await client.query("SELECT set_config('app.actor_user_id',$1,true),set_config('app.request_id',$2,true)",[req.auth?.userId ?? "",res.locals.requestId]);
+      const submission=await client.query(
+        "SELECT submission_id FROM waste_mgmt.collection_submissions WHERE submission_id=$1 AND submitted_by=$2 AND status='submitted' FOR UPDATE",
+        [id.data,auth.userId]
+      );
+      if(submission.rowCount!==1){
+        await client.query("ROLLBACK");
+        res.status(404).json({error:{code:"SUBMISSION_NOT_FOUND",message:"An editable collection submission was not found."}});
+        return;
+      }
+      const saved=[];
+      for(const file of files){
+        const stored=await storePrivateUpload(file);
+        savedKeys.push(stored.storageKey);
+        const inserted=await client.query(
+          "INSERT INTO waste_mgmt.collection_photos(submission_id,storage_key,media_type,byte_size,checksum_sha256,uploaded_by) " +
+          "VALUES ($1,$2,$3,$4,$5,$6) RETURNING photo_id AS \"photoId\",media_type AS \"mediaType\",byte_size AS \"byteSize\"",
+          [id.data,stored.storageKey,stored.mediaType,stored.fileSizeBytes,stored.checksumSha256,auth.userId]
+        );
+        saved.push(inserted.rows[0]);
+      }
+      await client.query("COMMIT");
+      res.status(201).json({data:saved});
+    }catch(error){
+      await client.query("ROLLBACK").catch(()=>undefined);
+      await Promise.all(savedKeys.map(removePrivateUpload));
+      next(error);
+    }finally{client.release();}
+  });
+
+  app.get("/api/v1/collection-submissions/:submissionId/photos", authenticate(database), requirePermission(database, "collections.verify"), async (req,res,next)=>{
+    const id=z.string().uuid().safeParse(req.params.submissionId);
+    if(!id.success){res.status(404).json({error:{code:"SUBMISSION_NOT_FOUND",message:"Submission not found."}});return;}
+    try{
+      const result=await database.query(
+        "SELECT photo_id AS \"photoId\",media_type AS \"mediaType\",byte_size AS \"byteSize\",created_at AS \"createdAt\" " +
+        "FROM waste_mgmt.collection_photos WHERE submission_id=$1 ORDER BY created_at",
+        [id.data]
+      );
+      res.status(200).json({data:result.rows});
+    }catch(error){next(error);}
+  });
+
+  app.get("/api/v1/collection-submissions/:submissionId/photos/:photoId", authenticate(database), requirePermission(database, "collections.verify"), async (req,res,next)=>{
+    const submissionId=z.string().uuid().safeParse(req.params.submissionId);
+    const photoId=z.string().uuid().safeParse(req.params.photoId);
+    if(!submissionId.success||!photoId.success){res.status(404).json({error:{code:"PHOTO_NOT_FOUND",message:"Photo not found."}});return;}
+    try{
+      const result=await database.query(
+        "SELECT storage_key AS \"storageKey\" FROM waste_mgmt.collection_photos WHERE submission_id=$1 AND photo_id=$2",
+        [submissionId.data,photoId.data]
+      );
+      const key=result.rows[0]?.storageKey;
+      if(!key){res.status(404).json({error:{code:"PHOTO_NOT_FOUND",message:"Photo not found."}});return;}
+      const file=await readPrivateUpload(key);
+      res.setHeader("Content-Type",file.mediaType);
+      res.setHeader("Content-Length",String(file.buffer.byteLength));
+      res.setHeader("Content-Disposition","attachment; filename=\"collection-evidence-"+photoId.data+"."+file.extension+"\"");
+      res.setHeader("X-Content-Type-Options","nosniff");
+      res.setHeader("Cache-Control","private, no-store");
+      res.status(200).send(file.buffer);
+    }catch(error){next(error);}
+  });
+
+  app.post("/api/v1/reports/:reportId/notes", authenticate(database), requirePermission(database, "reports.review"), async (req,res,next)=>{
+    const id=z.string().uuid().safeParse(req.params.reportId);
+    const body=z.object({body:z.string().trim().min(2).max(2000),visibility:z.enum(["public","internal"]).default("internal")}).strict().safeParse(req.body);
+    const auth=req.auth;
+    if(!id.success||!body.success||!auth){res.status(400).json({error:{code:"VALIDATION_ERROR",message:"Invalid report note."}});return;}
+    try{
+      const client=await database.connect();
+      try{
+        await client.query("BEGIN");
+        await client.query("SELECT set_config('app.actor_user_id',$1,true),set_config('app.request_id',$2,true)",[req.auth?.userId ?? "",res.locals.requestId]);
+        const report=await client.query("SELECT report_id FROM waste_mgmt.waste_reports WHERE report_id=$1 AND fest_id=1 FOR SHARE",[id.data]);
+        if(report.rowCount!==1){
+          await client.query("ROLLBACK");
+          res.status(404).json({error:{code:"REPORT_NOT_FOUND",message:"Report not found."}});
+          return;
+        }
+        const inserted=await client.query(
+          "INSERT INTO waste_mgmt.report_notes(report_id,author_id,body,visibility) VALUES ($1,$2,$3,$4) " +
+          "RETURNING note_id AS \"noteId\",body,visibility,created_at AS \"createdAt\"",
+          [id.data,auth.userId,body.data.body,body.data.visibility]
+        );
+        await client.query("COMMIT");
+        res.status(201).json({data:inserted.rows[0]});
+      }catch(error){await client.query("ROLLBACK").catch(()=>undefined);throw error;}
+      finally{client.release();}
+    }catch(error){next(error);}
+  });
+
+  app.post("/api/v1/reports/:reportId/start-review", authenticate(database), requirePermission(database, "reports.review"), async (req, res, next) => {
+    const id = z.string().uuid().safeParse(req.params.reportId);
+    const auth = req.auth;
+    if (!id.success || !auth) {
+      res.status(400).json({ error: { code: "VALIDATION_ERROR", message: "Invalid report ID." } });
+      return;
+    }
+    try {
+      const client = await database.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query("SELECT set_config('app.actor_user_id',$1,true),set_config('app.request_id',$2,true)",[req.auth?.userId ?? "",res.locals.requestId]);
+        const current = await client.query(
+          "SELECT report_id,status FROM waste_mgmt.waste_reports WHERE report_id=$1 AND fest_id=1 FOR UPDATE",
+          [id.data]
+        );
+        if (!current.rows[0]) {
+          await client.query("ROLLBACK");
+          res.status(404).json({ error: { code: "REPORT_NOT_FOUND", message: "Report not found." } });
+          return;
+        }
+        if (current.rows[0].status !== "submitted") {
+          await client.query("ROLLBACK");
+          res.status(409).json({ error: { code: "INVALID_REPORT_STATE", message: "Only newly submitted reports can enter review." } });
+          return;
+        }
+        const updated = await client.query(
+          "UPDATE waste_mgmt.waste_reports SET status='under_review',reviewed_by=$1,reviewed_at=now() " +
+          "WHERE report_id=$2 RETURNING report_id AS \"reportId\",status,reviewed_at AS \"reviewedAt\"",
+          [auth.userId,id.data]
+        );
+        await client.query("COMMIT");
+        res.status(200).json({ data: updated.rows[0] });
+      } catch (error) {
+        await client.query("ROLLBACK").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/v1/reports/:reportId/review", authenticate(database), requirePermission(database, "reports.review"), async (req, res, next) => {
+    const reportId = z.string().uuid().safeParse(req.params.reportId);
+    const body = z.object({
+      action: z.enum(["accept","reject","duplicate"]),
+      reason: z.string().trim().max(1000).optional(),
+      canonicalReportId: z.string().uuid().optional()
+    }).strict().safeParse(req.body);
+    if (!reportId.success || !body.success) {
+      res.status(400).json({ error: { code: "VALIDATION_ERROR", message: "Invalid report review request." } });
+      return;
+    }
+
+    if (body.data.action !== "duplicate" && body.data.canonicalReportId) {
+      res.status(422).json({ error: { code: "UNEXPECTED_CANONICAL_REPORT", message: "Only duplicate decisions can reference a canonical report." } });
+      return;
+    }
+    if ((body.data.action === "reject" || body.data.action === "duplicate") && !body.data.reason) {
+      res.status(422).json({ error: { code: "REASON_REQUIRED", message: "A reason is required for this review action." } });
+      return;
+    }
+    if (body.data.action === "duplicate" && !body.data.canonicalReportId) {
+      res.status(422).json({ error: { code: "CANONICAL_REPORT_REQUIRED", message: "Choose the original report this report duplicates." } });
+      return;
+    }
+    try {
+      const client = await database.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query("SELECT set_config('app.actor_user_id',$1,true),set_config('app.request_id',$2,true)",[req.auth?.userId ?? "",res.locals.requestId]);
+        const current = await client.query(
+          "SELECT report_id,status FROM waste_mgmt.waste_reports WHERE report_id=$1 AND fest_id=1 FOR UPDATE",
+          [reportId.data]
+        );
+        const row = current.rows[0];
+        if (!row) {
+          await client.query("ROLLBACK");
+          res.status(404).json({ error: { code: "REPORT_NOT_FOUND", message: "Report not found." } });
+          return;
+        }
+        if (row.status !== "under_review") {
+          await client.query("ROLLBACK");
+          res.status(409).json({ error: { code: "INVALID_REPORT_STATE", message: "Only reports under review can receive a review decision." } });
+          return;
+        }
+        if (body.data.canonicalReportId) {
+          const canonical = await client.query(
+            "SELECT report_id FROM waste_mgmt.waste_reports WHERE report_id=$1 AND status NOT IN ('duplicate','rejected','cancelled')",
+            [body.data.canonicalReportId]
+          );
+          if (canonical.rowCount !== 1 || body.data.canonicalReportId === reportId.data) {
+            await client.query("ROLLBACK");
+            res.status(422).json({ error: { code: "INVALID_CANONICAL_REPORT", message: "The selected original report is not valid." } });
+            return;
+          }
+        }
+        const nextStatus = body.data.action === "accept" ? "accepted" : body.data.action === "reject" ? "rejected" : "duplicate";
+        const updated = await client.query(
+          "UPDATE waste_mgmt.waste_reports SET status=$1, reviewed_by=$2, reviewed_at=now(), review_reason=$3, canonical_report_id=$4 " +
+          "WHERE report_id=$5 RETURNING report_id AS \"reportId\", status, reviewed_at AS \"reviewedAt\"",
+          [nextStatus, req.auth?.userId, body.data.reason ?? null, body.data.canonicalReportId ?? null, reportId.data]
+        );
+        await client.query("COMMIT");
+        res.status(200).json({ data: updated.rows[0] });
+      } catch (error) {
+        await client.query("ROLLBACK").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    } catch (error) {
+      next(error);
+    }
+  });
+
+
+  const taskRead = [authenticate(database), requirePermission(database, "tasks.read")];
+  const taskScope = (userId: string, roles: string[], parameterIndex = 1) => {
+    const userParameter = "$" + parameterIndex;
+    if (roles.some(role => ["administrator","waste_manager"].includes(role))) return { sql: "TRUE", values: [] as string[] };
+    if (roles.includes("team_lead")) {
+      return {
+        sql: "EXISTS (SELECT 1 FROM waste_mgmt.task_assignments ta LEFT JOIN waste_mgmt.teams tm ON tm.team_id=ta.team_id WHERE ta.task_id=t.task_id AND ta.unassigned_at IS NULL AND (ta.user_id=" + userParameter + " OR tm.team_lead_user_id=" + userParameter + "))",
+        values: [userId]
+      };
+    }
+    return {
+      sql: "EXISTS (SELECT 1 FROM waste_mgmt.task_assignments ta LEFT JOIN waste_mgmt.team_memberships tm ON tm.team_id=ta.team_id AND tm.user_id=" + userParameter + " AND tm.ends_at IS NULL AND tm.starts_at<=now() WHERE ta.task_id=t.task_id AND ta.unassigned_at IS NULL AND (ta.user_id=" + userParameter + " OR tm.user_id=" + userParameter + "))",
+      values: [userId]
+    };
+  };
+
+  app.get("/api/v1/tasks", ...taskRead, async (req, res, next) => {
+    const filters = z.object({
+      status: z.enum(["draft","open","assigned","in_progress","submitted_for_verification","verified","cancelled"]).optional(),
+      page: z.coerce.number().int().min(1).default(1),
+      pageSize: z.coerce.number().int().min(1).max(100).default(20)
+    }).safeParse(req.query);
+    const auth = req.auth;
+    if (!filters.success || !auth) {
+      res.status(400).json({ error: { code: "VALIDATION_ERROR", message: "Invalid task filters." } });
+      return;
+    }
+    try {
+      const scope = taskScope(auth.userId, auth.roles);
+      const conditions = ["t.fest_id=1", scope.sql];
+      const values: (string | number)[] = [...scope.values];
+      if (filters.data.status) {
+        values.push(filters.data.status);
+        conditions.push("t.status=$" + values.length);
+      }
+      const where = conditions.join(" AND ");
+      const count = await database.query(
+        "SELECT COUNT(*)::int AS total FROM waste_mgmt.collection_tasks t WHERE " + where,
+        values
+      );
+      const pageValues = [...values, filters.data.pageSize, (filters.data.page-1)*filters.data.pageSize];
+      const result = await database.query(
+        "SELECT t.task_id AS \"taskId\", t.title, t.priority, t.status, t.due_at AS \"dueAt\", " +
+        "t.created_at AS \"createdAt\", a.name AS \"areaName\", z.name AS \"zoneName\", " +
+        "latest.submission_id AS \"latestSubmissionId\", latest.status AS \"latestSubmissionStatus\" " +
+        "FROM waste_mgmt.collection_tasks t JOIN waste_mgmt.areas a ON a.area_id=t.area_id " +
+        "JOIN waste_mgmt.zones z ON z.zone_id=a.zone_id " +
+        "LEFT JOIN LATERAL (SELECT cs.submission_id,cs.status FROM waste_mgmt.collection_submissions cs WHERE cs.task_id=t.task_id ORDER BY cs.submitted_at DESC LIMIT 1) latest ON TRUE " +
+        "WHERE " + where + " ORDER BY t.due_at NULLS LAST, t.created_at DESC LIMIT $" + (values.length+1) +
+        " OFFSET $" + (values.length+2),
+        pageValues
+      );
+      res.status(200).json({ data: result.rows, meta: { page: filters.data.page, pageSize: filters.data.pageSize, total: count.rows[0]?.total ?? 0 } });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/v1/tasks/:taskId", ...taskRead, async (req, res, next) => {
+    const id = z.string().uuid().safeParse(req.params.taskId);
+    const auth = req.auth;
+    if (!id.success || !auth) {
+      res.status(404).json({ error: { code: "TASK_NOT_FOUND", message: "Task not found." } });
+      return;
+    }
+    try {
+      const scope = taskScope(auth.userId, auth.roles, 2);
+      const result = await database.query(
+        "SELECT t.task_id AS \"taskId\", t.title, t.instructions, t.priority, t.status, t.due_at AS \"dueAt\", " +
+        "t.created_at AS \"createdAt\", t.started_at AS \"startedAt\", t.completed_at AS \"completedAt\", " +
+        "a.name AS \"areaName\", z.name AS \"zoneName\" " +
+        "FROM waste_mgmt.collection_tasks t JOIN waste_mgmt.areas a ON a.area_id=t.area_id " +
+        "JOIN waste_mgmt.zones z ON z.zone_id=a.zone_id WHERE t.task_id=$1 AND t.fest_id=1 AND " + scope.sql,
+        [id.data, ...scope.values]
+      );
+      if (!result.rows[0]) {
+        res.status(404).json({ error: { code: "TASK_NOT_FOUND", message: "Task not found." } });
+        return;
+      }
+      res.status(200).json({ data: result.rows[0] });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+
+
+
+
+
+
+
+  app.get("/api/v1/fest", authenticate(database), requirePermission(database, "fest.manage"), async (_req,res,next)=>{
+    try{
+      const result=await database.query(
+        "SELECT fest_id AS \"festId\",name,description,timezone,starts_at AS \"startsAt\",ends_at AS \"endsAt\",status,updated_at AS \"updatedAt\" " +
+        "FROM waste_mgmt.fest WHERE fest_id=1"
+      );
+      if(!result.rows[0]){res.status(404).json({error:{code:"FEST_NOT_FOUND",message:"Fest configuration not found."}});return;}
+      res.status(200).json({data:result.rows[0]});
+    }catch(error){next(error);}
+  });
+
+  app.patch("/api/v1/fest", authenticate(database), requirePermission(database, "fest.manage"), async (req,res,next)=>{
+    const body=z.object({
+      name:z.string().trim().min(2).max(160),
+      description:z.string().trim().max(3000).nullable().optional(),
+      timezone:z.string().trim().min(3).max(80),
+      startsAt:z.string().datetime().nullable(),
+      endsAt:z.string().datetime().nullable(),
+      status:z.enum(["planned","active","completed","cancelled"])
+    }).strict().safeParse(req.body);
+    const auth=req.auth;
+    if(!body.success||!auth){res.status(400).json({error:{code:"VALIDATION_ERROR",message:"Invalid fest configuration."}});return;}
+    if(body.data.startsAt&&body.data.endsAt&&new Date(body.data.endsAt)<=new Date(body.data.startsAt)){
+      res.status(422).json({error:{code:"INVALID_FEST_WINDOW",message:"Fest end time must be after its start time."}});
+      return;
+    }
+    try{new Intl.DateTimeFormat("en-US",{timeZone:body.data.timezone});}
+    catch{res.status(422).json({error:{code:"INVALID_TIMEZONE",message:"Use a valid IANA time zone, for example Asia/Dhaka."}});return;}
+    try{
+      const client=await database.connect();
+      try{
+        await client.query("BEGIN");
+        await client.query("SELECT set_config('app.actor_user_id',$1,true),set_config('app.request_id',$2,true)",[req.auth?.userId ?? "",res.locals.requestId]);
+        const result=await client.query(
+          "UPDATE waste_mgmt.fest SET name=$1,description=$2,timezone=$3,starts_at=$4,ends_at=$5,status=$6 " +
+          "WHERE fest_id=1 RETURNING fest_id AS \"festId\",name,description,timezone,starts_at AS \"startsAt\",ends_at AS \"endsAt\",status,updated_at AS \"updatedAt\"",
+          [body.data.name,body.data.description??null,body.data.timezone,body.data.startsAt,body.data.endsAt,body.data.status]
+        );
+        if(!result.rows[0]){await client.query("ROLLBACK");res.status(404).json({error:{code:"FEST_NOT_FOUND",message:"Fest configuration not found."}});return;}
+        await client.query("COMMIT");
+        res.status(200).json({data:result.rows[0]});
+      }catch(error){await client.query("ROLLBACK").catch(()=>undefined);throw error;}
+      finally{client.release();}
+    }catch(error){next(error);}
+  });
+
+  app.get("/api/v1/audit-logs", authenticate(database), requirePermission(database, "audit.read"), async (req,res,next)=>{
+    const filters=z.object({
+      entityType:z.string().trim().min(1).max(80).optional(),
+      action:z.enum(["INSERT","UPDATE","DELETE"]).optional(),
+      page:z.coerce.number().int().min(1).max(100000).default(1),
+      pageSize:z.coerce.number().int().min(1).max(100).default(50)
+    }).safeParse(req.query);
+    if(!filters.success){res.status(400).json({error:{code:"VALIDATION_ERROR",message:"Invalid audit filters."}});return;}
+    const values:unknown[]=[];
+    const where:string[]=[];
+    if(filters.data.entityType){values.push(filters.data.entityType);where.push("entity_type=$"+values.length);}
+    if(filters.data.action){values.push(filters.data.action);where.push("action=$"+values.length);}
+    const clause=where.length?"WHERE "+where.join(" AND "):"";
+    try{
+      const count=await database.query("SELECT COUNT(*)::int AS total FROM waste_mgmt.audit_logs "+clause,values);
+      const pageValues=[...values,filters.data.pageSize,(filters.data.page-1)*filters.data.pageSize];
+      const rows=await database.query(
+        "SELECT audit_log_id AS \"auditLogId\",entity_type AS \"entityType\",entity_id AS \"entityId\",action, " +
+        "actor_user_id AS \"actorUserId\",created_at AS \"createdAt\",safe_metadata AS \"safeMetadata\",request_id AS \"requestId\" " +
+        "FROM waste_mgmt.audit_logs "+clause+" ORDER BY created_at DESC,audit_log_id DESC " +
+        "LIMIT $"+(values.length+1)+" OFFSET $"+(values.length+2),
+        pageValues
+      );
+      res.status(200).json({data:rows.rows,meta:{page:filters.data.page,pageSize:filters.data.pageSize,total:count.rows[0]?.total??0}});
+    }catch(error){next(error);}
+  });
+
+  app.get("/api/v1/roles", authenticate(database), requirePermission(database, "users.manage"), async (_req,res,next)=>{
+    try{
+      const result=await database.query("SELECT role_id AS \"roleId\",role_key AS \"roleKey\",display_name AS \"displayName\",description FROM waste_mgmt.roles ORDER BY role_id");
+      res.status(200).json({data:result.rows});
+    }catch(error){next(error);}
+  });
+
+  app.get("/api/v1/users", authenticate(database), requirePermission(database, "users.manage"), async (_req,res,next)=>{
+    try{
+      const result=await database.query(
+        "SELECT u.user_id AS \"userId\",u.full_name AS \"fullName\",u.normalized_email AS email,u.phone_number AS \"phoneNumber\",u.status,u.created_at AS \"createdAt\", " +
+        "COALESCE(array_agg(DISTINCT r.role_key) FILTER (WHERE r.role_key IS NOT NULL),ARRAY[]::text[]) AS roles " +
+        "FROM waste_mgmt.users u LEFT JOIN waste_mgmt.user_roles ur ON ur.user_id=u.user_id " +
+        "LEFT JOIN waste_mgmt.roles r ON r.role_id=ur.role_id GROUP BY u.user_id ORDER BY u.created_at DESC LIMIT 500"
+      );
+      res.status(200).json({data:result.rows});
+    }catch(error){next(error);}
+  });
+
+  app.post("/api/v1/users", authenticate(database), requirePermission(database, "users.manage"), async (req,res,next)=>{
+    const body=z.object({
+      fullName:z.string().trim().min(2).max(120),
+      email:z.string().trim().email().max(254),
+      password:z.string().min(14).max(128),
+      roleIds:z.array(z.coerce.number().int().positive()).min(1).max(10)
+    }).strict().safeParse(req.body);
+    if(!body.success){res.status(400).json({error:{code:"VALIDATION_ERROR",message:"Invalid user details. Password must be at least 14 characters."}});return;}
+    try{
+      const client=await database.connect();
+      try{
+        await client.query("BEGIN");
+        await client.query("SELECT set_config('app.actor_user_id',$1,true),set_config('app.request_id',$2,true)",[req.auth?.userId ?? "",res.locals.requestId]);
+        const roles=await client.query("SELECT role_id FROM waste_mgmt.roles WHERE role_id=ANY($1::smallint[])",[body.data.roleIds]);
+        if(roles.rowCount!==new Set(body.data.roleIds).size){
+          await client.query("ROLLBACK");
+          res.status(422).json({error:{code:"INVALID_ROLES",message:"One or more selected roles do not exist."}});
+          return;
+        }
+        const passwordHash=await argon2.hash(body.data.password,{type:argon2.argon2id});
+        const user=await client.query(
+          "INSERT INTO waste_mgmt.users(full_name,email,password_hash) VALUES ($1,$2,$3) RETURNING user_id AS \"userId\",full_name AS \"fullName\",normalized_email AS email,status",
+          [body.data.fullName,body.data.email,passwordHash]
+        );
+        const userId=user.rows[0]?.userId;
+        if(!userId)throw new Error("User account could not be created.");
+        for(const roleId of new Set(body.data.roleIds)){
+          await client.query("INSERT INTO waste_mgmt.user_roles(user_id,role_id,assigned_by) VALUES ($1,$2,$3)",[userId,roleId,req.auth?.userId]);
+        }
+        await client.query("COMMIT");
+        res.status(201).json({data:user.rows[0]});
+      }catch(error){await client.query("ROLLBACK").catch(()=>undefined);throw error;}
+      finally{client.release();}
+    }catch(error){next(error);}
+  });
+
+  app.patch("/api/v1/users/:userId/status", authenticate(database), requirePermission(database, "users.manage"), async (req,res,next)=>{
+    const id=z.string().uuid().safeParse(req.params.userId);
+    const body=z.object({status:z.enum(["active","suspended","disabled"])}).strict().safeParse(req.body);
+    if(!id.success||!body.success){res.status(400).json({error:{code:"VALIDATION_ERROR",message:"Invalid account status update."}});return;}
+    try{
+      const auth=req.auth;
+      const client=await database.connect();
+      try{
+        await client.query("BEGIN");
+        await client.query("SELECT set_config('app.actor_user_id',$1,true),set_config('app.request_id',$2,true)",[req.auth?.userId ?? "",res.locals.requestId]);
+        if(body.data.status!=="active"){
+          const isAdmin=await client.query(
+            "SELECT EXISTS(SELECT 1 FROM waste_mgmt.user_roles ur JOIN waste_mgmt.roles r ON r.role_id=ur.role_id WHERE ur.user_id=$1 AND r.role_key='administrator') AS is_admin",
+            [id.data]
+          );
+          if(isAdmin.rows[0]?.is_admin){
+            const count=await client.query(
+              "SELECT COUNT(*)::int AS total FROM waste_mgmt.user_roles ur JOIN waste_mgmt.roles r ON r.role_id=ur.role_id JOIN waste_mgmt.users u ON u.user_id=ur.user_id WHERE r.role_key='administrator' AND u.status='active'"
+            );
+            if(Number(count.rows[0]?.total??0)<=1){
+              await client.query("ROLLBACK");
+              res.status(409).json({error:{code:"LAST_ADMIN_PROTECTED",message:"The last active Administrator account cannot be suspended or disabled."}});
+              return;
+            }
+          }
+          if(auth?.userId===id.data && isAdmin.rows[0]?.is_admin){
+            await client.query("ROLLBACK");
+            res.status(409).json({error:{code:"SELF_LOCKOUT_PREVENTED",message:"You cannot suspend or disable your own Administrator account."}});
+            return;
+          }
+        }
+        const updated=await client.query(
+          "UPDATE waste_mgmt.users SET status=$1 WHERE user_id=$2 RETURNING user_id AS \"userId\",status",
+          [body.data.status,id.data]
+        );
+        if(!updated.rows[0]){
+          await client.query("ROLLBACK");
+          res.status(404).json({error:{code:"USER_NOT_FOUND",message:"User not found."}});
+          return;
+        }
+        if(body.data.status!=="active")await client.query("UPDATE waste_mgmt.sessions SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL",[id.data]);
+        await client.query("COMMIT");
+        res.status(200).json({data:updated.rows[0]});
+      }catch(error){await client.query("ROLLBACK").catch(()=>undefined);throw error;}
+      finally{client.release();}
+    }catch(error){next(error);}
+  });
+
+  app.put("/api/v1/users/:userId/roles", authenticate(database), requirePermission(database, "users.manage"), async (req,res,next)=>{
+    const id=z.string().uuid().safeParse(req.params.userId);
+    const body=z.object({roleIds:z.array(z.coerce.number().int().positive()).min(1).max(10)}).strict().safeParse(req.body);
+    const auth=req.auth;
+    if(!id.success||!body.success||!auth){res.status(400).json({error:{code:"VALIDATION_ERROR",message:"Invalid role assignment."}});return;}
+    try{
+      const client=await database.connect();
+      try{
+        await client.query("BEGIN");
+        await client.query("SELECT set_config('app.actor_user_id',$1,true),set_config('app.request_id',$2,true)",[req.auth?.userId ?? "",res.locals.requestId]);
+        const targetUser=await client.query("SELECT user_id FROM waste_mgmt.users WHERE user_id=$1 FOR UPDATE",[id.data]);
+        if(targetUser.rowCount!==1){
+          await client.query("ROLLBACK");
+          res.status(404).json({error:{code:"USER_NOT_FOUND",message:"User not found."}});
+          return;
+        }
+        const roleRows=await client.query("SELECT role_id,role_key FROM waste_mgmt.roles WHERE role_id=ANY($1::smallint[])",[body.data.roleIds]);
+        if(roleRows.rowCount!==new Set(body.data.roleIds).size){
+          await client.query("ROLLBACK");
+          res.status(422).json({error:{code:"INVALID_ROLES",message:"One or more selected roles do not exist."}});
+          return;
+        }
+        const hasAdmin=roleRows.rows.some((role:{role_id:number;role_key:string})=>role.role_key==="administrator");
+        if(id.data===auth.userId&&!hasAdmin){
+          await client.query("ROLLBACK");
+          res.status(409).json({error:{code:"SELF_LOCKOUT_PREVENTED",message:"You cannot remove your own Administrator role."}});
+          return;
+        }
+        const currentAdmin=await client.query(
+          "SELECT EXISTS(SELECT 1 FROM waste_mgmt.user_roles ur JOIN waste_mgmt.roles r ON r.role_id=ur.role_id WHERE ur.user_id=$1 AND r.role_key='administrator') AS is_admin",
+          [id.data]
+        );
+        if(currentAdmin.rows[0]?.is_admin&&!hasAdmin){
+          const count=await client.query("SELECT COUNT(*)::int AS total FROM waste_mgmt.user_roles ur JOIN waste_mgmt.roles r ON r.role_id=ur.role_id WHERE r.role_key='administrator'");
+          if(Number(count.rows[0]?.total??0)<=1){
+            await client.query("ROLLBACK");
+            res.status(409).json({error:{code:"LAST_ADMIN_PROTECTED",message:"The last Administrator account cannot lose its role."}});
+            return;
+          }
+        }
+        await client.query("DELETE FROM waste_mgmt.user_roles WHERE user_id=$1",[id.data]);
+        for(const roleId of new Set(body.data.roleIds)){
+          await client.query("INSERT INTO waste_mgmt.user_roles(user_id,role_id,assigned_by) VALUES ($1,$2,$3)",[id.data,roleId,auth.userId]);
+        }
+        await client.query("UPDATE waste_mgmt.sessions SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL",[id.data]);
+        await client.query("COMMIT");
+        res.status(200).json({data:{userId:id.data,roleIds:[...new Set(body.data.roleIds)]}});
+      }catch(error){await client.query("ROLLBACK").catch(()=>undefined);throw error;}
+      finally{client.release();}
+    }catch(error){next(error);}
+  });
+
+  app.get("/api/v1/locations", authenticate(database), requirePermission(database, "locations.manage"), async (_req,res,next)=>{
+    try {
+      const [zones,areas,bins] = await Promise.all([
+        database.query("SELECT zone_id AS \"zoneId\",code,name,description,is_active AS \"isActive\" FROM waste_mgmt.zones WHERE fest_id=1 ORDER BY name"),
+        database.query("SELECT area_id AS \"areaId\",zone_id AS \"zoneId\",parent_area_id AS \"parentAreaId\",code,name,is_active AS \"isActive\" FROM waste_mgmt.areas WHERE fest_id=1 ORDER BY name"),
+        database.query("SELECT b.bin_id AS \"binId\",b.area_id AS \"areaId\",b.code,b.capacity_kg AS \"capacityKg\",b.is_active AS \"isActive\",wc.name AS \"categoryName\" FROM waste_mgmt.bins b LEFT JOIN waste_mgmt.waste_categories wc ON wc.category_id=b.category_id WHERE b.fest_id=1 ORDER BY b.code")
+      ]);
+      res.status(200).json({data:{zones:zones.rows,areas:areas.rows,bins:bins.rows}});
+    } catch(error){next(error);}
+  });
+
+  app.post("/api/v1/zones", authenticate(database), requirePermission(database, "locations.manage"), async (req,res,next)=>{
+    const body=z.object({code:z.string().trim().min(2).max(40).regex(/^[A-Za-z0-9_-]+$/),name:z.string().trim().min(2).max(100),description:z.string().trim().max(1000).optional()}).strict().safeParse(req.body);
+    if(!body.success){res.status(400).json({error:{code:"VALIDATION_ERROR",message:"Invalid zone details."}});return;}
+    try{
+      const result=await auditedMutation(database,req,res,client=>client.query(
+        "INSERT INTO waste_mgmt.zones(fest_id,code,name,description) VALUES (1,$1,$2,$3) RETURNING zone_id AS \"zoneId\",code,name",
+        [body.data.code.toUpperCase(),body.data.name,body.data.description??null]
+      ));
+      res.status(201).json({data:result.rows[0]});
+    }catch(error){next(error);}
+  });
+
+  app.post("/api/v1/areas", authenticate(database), requirePermission(database, "locations.manage"), async (req,res,next)=>{
+    const body=z.object({zoneId:z.string().uuid(),parentAreaId:z.string().uuid().optional(),code:z.string().trim().min(2).max(40).regex(/^[A-Za-z0-9_-]+$/),name:z.string().trim().min(2).max(120),description:z.string().trim().max(1000).optional()}).strict().safeParse(req.body);
+    if(!body.success){res.status(400).json({error:{code:"VALIDATION_ERROR",message:"Invalid area details."}});return;}
+    try{
+      const zone=await database.query("SELECT zone_id FROM waste_mgmt.zones WHERE zone_id=$1 AND fest_id=1 AND is_active=TRUE",[body.data.zoneId]);
+      if(zone.rowCount!==1){res.status(422).json({error:{code:"INVALID_ZONE",message:"The selected zone is not active."}});return;}
+      if(body.data.parentAreaId){
+        const parent=await database.query("SELECT area_id FROM waste_mgmt.areas WHERE area_id=$1 AND zone_id=$2 AND is_active=TRUE",[body.data.parentAreaId,body.data.zoneId]);
+        if(parent.rowCount!==1){res.status(422).json({error:{code:"INVALID_PARENT_AREA",message:"Parent area must be active and belong to the selected zone."}});return;}
+      }
+      const result=await auditedMutation(database,req,res,client=>client.query(
+        "INSERT INTO waste_mgmt.areas(fest_id,zone_id,parent_area_id,code,name,description) VALUES (1,$1,$2,$3,$4,$5) RETURNING area_id AS \"areaId\",zone_id AS \"zoneId\",code,name",
+        [body.data.zoneId,body.data.parentAreaId??null,body.data.code.toUpperCase(),body.data.name,body.data.description??null]
+      ));
+      res.status(201).json({data:result.rows[0]});
+    }catch(error){next(error);}
+  });
+
+  app.post("/api/v1/bins", authenticate(database), requirePermission(database, "locations.manage"), async (req,res,next)=>{
+    const body=z.object({areaId:z.string().uuid(),code:z.string().trim().min(2).max(40).regex(/^[A-Za-z0-9_-]+$/),categoryId:z.coerce.number().int().positive().optional(),capacityKg:z.coerce.number().positive().max(100000).optional()}).strict().safeParse(req.body);
+    if(!body.success){res.status(400).json({error:{code:"VALIDATION_ERROR",message:"Invalid bin details."}});return;}
+    try{
+      const area=await database.query("SELECT area_id FROM waste_mgmt.areas WHERE area_id=$1 AND fest_id=1 AND is_active=TRUE",[body.data.areaId]);
+      if(area.rowCount!==1){res.status(422).json({error:{code:"INVALID_AREA",message:"The selected area is not active."}});return;}
+      if(body.data.categoryId){
+        const category=await database.query("SELECT category_id FROM waste_mgmt.waste_categories WHERE category_id=$1 AND is_active=TRUE",[body.data.categoryId]);
+        if(category.rowCount!==1){res.status(422).json({error:{code:"INVALID_CATEGORY",message:"The selected waste category is not active."}});return;}
+      }
+      const result=await auditedMutation(database,req,res,client=>client.query(
+        "INSERT INTO waste_mgmt.bins(fest_id,area_id,code,category_id,capacity_kg) VALUES (1,$1,$2,$3,$4) RETURNING bin_id AS \"binId\",area_id AS \"areaId\",code,capacity_kg AS \"capacityKg\"",
+        [body.data.areaId,body.data.code.toUpperCase(),body.data.categoryId??null,body.data.capacityKg??null]
+      ));
+      res.status(201).json({data:result.rows[0]});
+    }catch(error){next(error);}
+  });
+
+  app.post("/api/v1/waste-categories", authenticate(database), requirePermission(database, "locations.manage"), async (req,res,next)=>{
+    const body=z.object({code:z.string().trim().min(2).max(40).regex(/^[A-Za-z0-9_-]+$/),name:z.string().trim().min(2).max(80),description:z.string().trim().max(1000).optional(),isRecyclable:z.boolean().default(false)}).strict().safeParse(req.body);
+    if(!body.success){res.status(400).json({error:{code:"VALIDATION_ERROR",message:"Invalid waste category details."}});return;}
+    try{
+      const result=await auditedMutation(database,req,res,client=>client.query(
+        "INSERT INTO waste_mgmt.waste_categories(code,name,description,is_recyclable) VALUES ($1,$2,$3,$4) RETURNING category_id AS \"categoryId\",code,name,is_recyclable AS \"isRecyclable\"",
+        [body.data.code.toLowerCase(),body.data.name,body.data.description??null,body.data.isRecyclable]
+      ));
+      res.status(201).json({data:result.rows[0]});
+    }catch(error){next(error);}
+  });
+
+  app.patch("/api/v1/zones/:zoneId/status", authenticate(database), requirePermission(database, "locations.manage"), async (req,res,next)=>{
+    const id=z.string().uuid().safeParse(req.params.zoneId);
+    const body=z.object({isActive:z.boolean()}).strict().safeParse(req.body);
+    if(!id.success||!body.success){res.status(400).json({error:{code:"VALIDATION_ERROR",message:"Invalid zone status update."}});return;}
+    try{
+      const client=await database.connect();
+      try{
+        await client.query("BEGIN");
+        await client.query("SELECT set_config('app.actor_user_id',$1,true),set_config('app.request_id',$2,true)",[req.auth?.userId ?? "",res.locals.requestId]);
+        const updated = await client.query("UPDATE waste_mgmt.zones SET is_active=$1 WHERE zone_id=$2 AND fest_id=1",[body.data.isActive,id.data]);
+        if (updated.rowCount !== 1) { await client.query("ROLLBACK"); res.status(404).json({error:{code:"ZONE_NOT_FOUND",message:"Zone not found."}}); return; }
+        if(!body.data.isActive){
+          await client.query("UPDATE waste_mgmt.areas SET is_active=FALSE WHERE zone_id=$1",[id.data]);
+          await client.query("UPDATE waste_mgmt.bins SET is_active=FALSE WHERE area_id IN (SELECT area_id FROM waste_mgmt.areas WHERE zone_id=$1)",[id.data]);
+        }
+        await client.query("COMMIT");
+        res.status(200).json({data:{zoneId:id.data,isActive:body.data.isActive}});
+      }catch(error){await client.query("ROLLBACK").catch(()=>undefined);throw error;}
+      finally{client.release();}
+    }catch(error){next(error);}
+  });
+
+  app.patch("/api/v1/areas/:areaId/status", authenticate(database), requirePermission(database, "locations.manage"), async (req,res,next)=>{
+    const id=z.string().uuid().safeParse(req.params.areaId);
+    const body=z.object({isActive:z.boolean()}).strict().safeParse(req.body);
+    if(!id.success||!body.success){res.status(400).json({error:{code:"VALIDATION_ERROR",message:"Invalid area status update."}});return;}
+    try{
+      const client=await database.connect();
+      try{
+        await client.query("BEGIN");
+        await client.query("SELECT set_config('app.actor_user_id',$1,true),set_config('app.request_id',$2,true)",[req.auth?.userId ?? "",res.locals.requestId]);
+        const updated = await client.query("UPDATE waste_mgmt.areas SET is_active=$1 WHERE area_id=$2 AND fest_id=1",[body.data.isActive,id.data]);
+        if (updated.rowCount !== 1) { await client.query("ROLLBACK"); res.status(404).json({error:{code:"AREA_NOT_FOUND",message:"Area not found."}}); return; }
+        if(!body.data.isActive){
+          await client.query(
+            "WITH RECURSIVE descendants(area_id) AS (SELECT area_id FROM waste_mgmt.areas WHERE area_id=$1 " +
+            "UNION ALL SELECT child.area_id FROM waste_mgmt.areas child JOIN descendants parent ON child.parent_area_id=parent.area_id) " +
+            "UPDATE waste_mgmt.areas SET is_active=FALSE WHERE area_id IN (SELECT area_id FROM descendants)",
+            [id.data]
+          );
+          await client.query(
+            "UPDATE waste_mgmt.bins SET is_active=FALSE WHERE area_id IN " +
+            "(WITH RECURSIVE descendants(area_id) AS (SELECT area_id FROM waste_mgmt.areas WHERE area_id=$1 " +
+            "UNION ALL SELECT child.area_id FROM waste_mgmt.areas child JOIN descendants parent ON child.parent_area_id=parent.area_id) " +
+            "SELECT area_id FROM descendants)",
+            [id.data]
+          );
+        }
+        await client.query("COMMIT");
+        res.status(200).json({data:{areaId:id.data,isActive:body.data.isActive}});
+      }catch(error){await client.query("ROLLBACK").catch(()=>undefined);throw error;}
+      finally{client.release();}
+    }catch(error){next(error);}
+  });
+
+  app.patch("/api/v1/bins/:binId/status", authenticate(database), requirePermission(database, "locations.manage"), async (req,res,next)=>{
+    const id=z.string().uuid().safeParse(req.params.binId);
+    const body=z.object({isActive:z.boolean()}).strict().safeParse(req.body);
+    if(!id.success||!body.success){res.status(400).json({error:{code:"VALIDATION_ERROR",message:"Invalid bin status update."}});return;}
+    try{
+      const result=await auditedMutation(database,req,res,client=>client.query("UPDATE waste_mgmt.bins SET is_active=$1 WHERE bin_id=$2 AND fest_id=1 RETURNING bin_id AS \"binId\",is_active AS \"isActive\"",[body.data.isActive,id.data]));
+      if(!result.rows[0]){res.status(404).json({error:{code:"BIN_NOT_FOUND",message:"Bin not found."}});return;}
+      res.status(200).json({data:result.rows[0]});
+    }catch(error){next(error);}
+  });
+
+  app.patch("/api/v1/waste-categories/:categoryId/status", authenticate(database), requirePermission(database, "locations.manage"), async (req,res,next)=>{
+    const id=z.coerce.number().int().positive().safeParse(req.params.categoryId);
+    const body=z.object({isActive:z.boolean()}).strict().safeParse(req.body);
+    if(!id.success||!body.success){res.status(400).json({error:{code:"VALIDATION_ERROR",message:"Invalid category status update."}});return;}
+    try{
+      const result=await auditedMutation(database,req,res,client=>client.query("UPDATE waste_mgmt.waste_categories SET is_active=$1 WHERE category_id=$2 RETURNING category_id AS \"categoryId\",is_active AS \"isActive\"",[body.data.isActive,id.data]));
+      if(!result.rows[0]){res.status(404).json({error:{code:"CATEGORY_NOT_FOUND",message:"Waste category not found."}});return;}
+      res.status(200).json({data:result.rows[0]});
+    }catch(error){next(error);}
+  });
+
+  app.get("/api/v1/users/assignable", authenticate(database), requirePermission(database, "tasks.manage"), async (_req, res, next) => {
+    try {
+      const result = await database.query(
+        "SELECT user_id AS \"userId\",full_name AS \"fullName\",normalized_email AS email " +
+        "FROM waste_mgmt.users WHERE status='active' ORDER BY full_name"
+      );
+      res.status(200).json({ data: result.rows });
+    } catch (error) { next(error); }
+  });
+
+  app.get("/api/v1/teams", authenticate(database), requirePermission(database, "tasks.manage"), async (_req, res, next) => {
+    try {
+      const result = await database.query(
+        "SELECT t.team_id AS \"teamId\",t.name,t.code,t.team_lead_user_id AS \"teamLeadUserId\", " +
+        "COUNT(tm.membership_id)::int AS \"activeMemberCount\" " +
+        "FROM waste_mgmt.teams t LEFT JOIN waste_mgmt.team_memberships tm ON tm.team_id=t.team_id AND tm.ends_at IS NULL " +
+        "WHERE t.is_active=TRUE GROUP BY t.team_id ORDER BY t.name"
+      );
+      res.status(200).json({ data: result.rows });
+    } catch (error) { next(error); }
+  });
+
+  app.post("/api/v1/teams", authenticate(database), requirePermission(database, "tasks.manage"), async (req, res, next) => {
+    const body = z.object({
+      name: z.string().trim().min(2).max(100),
+      code: z.string().trim().min(2).max(40).regex(/^[A-Za-z0-9_-]+$/),
+      teamLeadUserId: z.string().uuid().optional()
+    }).strict().safeParse(req.body);
+    if (!body.success || !req.auth) {
+      res.status(400).json({ error: { code: "VALIDATION_ERROR", message: "Invalid team details." } });
+      return;
+    }
+    try {
+      const client = await database.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query("SELECT set_config('app.actor_user_id',$1,true),set_config('app.request_id',$2,true)",[req.auth?.userId ?? "",res.locals.requestId]);
+        if (body.data.teamLeadUserId) {
+          const lead = await client.query("SELECT user_id FROM waste_mgmt.users WHERE user_id=$1 AND status='active'",[body.data.teamLeadUserId]);
+          if (lead.rowCount !== 1) {
+            await client.query("ROLLBACK");
+            res.status(422).json({ error: { code: "INVALID_TEAM_LEAD", message: "The selected team lead is not active." } });
+            return;
+          }
+        }
+        const result = await client.query(
+          "INSERT INTO waste_mgmt.teams(name,code,team_lead_user_id) VALUES ($1,$2,$3) RETURNING team_id AS \"teamId\",name,code,team_lead_user_id AS \"teamLeadUserId\"",
+          [body.data.name,body.data.code.toUpperCase(),body.data.teamLeadUserId ?? null]
+        );
+        const team = result.rows[0];
+        if (body.data.teamLeadUserId && team) {
+          await client.query(
+            "INSERT INTO waste_mgmt.team_memberships(team_id,user_id,member_role) VALUES ($1,$2,'team_lead') ON CONFLICT DO NOTHING",
+            [team.teamId,body.data.teamLeadUserId]
+          );
+        }
+        await client.query("COMMIT");
+        res.status(201).json({ data: team });
+      } catch (error) {
+        await client.query("ROLLBACK").catch(() => undefined);
+        throw error;
+      } finally { client.release(); }
+    } catch (error) { next(error); }
+  });
+
+  app.post("/api/v1/teams/:teamId/members", authenticate(database), requirePermission(database, "tasks.manage"), async (req, res, next) => {
+    const teamId = z.string().uuid().safeParse(req.params.teamId);
+    const body = z.object({ userId: z.string().uuid(), memberRole: z.enum(["team_lead","volunteer"]).default("volunteer") }).strict().safeParse(req.body);
+    if (!teamId.success || !body.success) {
+      res.status(400).json({ error: { code: "VALIDATION_ERROR", message: "Invalid team membership." } });
+      return;
+    }
+    try {
+      const client = await database.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query("SELECT set_config('app.actor_user_id',$1,true),set_config('app.request_id',$2,true)",[req.auth?.userId ?? "",res.locals.requestId]);
+        const team = await client.query("SELECT team_id FROM waste_mgmt.teams WHERE team_id=$1 AND is_active=TRUE FOR UPDATE",[teamId.data]);
+        const user = await client.query("SELECT user_id FROM waste_mgmt.users WHERE user_id=$1 AND status='active'",[body.data.userId]);
+        if (team.rowCount !== 1 || user.rowCount !== 1) {
+          await client.query("ROLLBACK");
+          res.status(422).json({ error: { code: "INVALID_MEMBERSHIP", message: "The team or user is not active." } });
+          return;
+        }
+        const membership = await client.query(
+          "INSERT INTO waste_mgmt.team_memberships(team_id,user_id,member_role) VALUES ($1,$2,$3) RETURNING membership_id AS \"membershipId\",team_id AS \"teamId\",user_id AS \"userId\",member_role AS \"memberRole\"",
+          [teamId.data,body.data.userId,body.data.memberRole]
+        );
+        if (body.data.memberRole === "team_lead") {
+          await client.query("UPDATE waste_mgmt.teams SET team_lead_user_id=$1 WHERE team_id=$2",[body.data.userId,teamId.data]);
+        }
+        await client.query("COMMIT");
+        res.status(201).json({ data: membership.rows[0] });
+      } catch (error) {
+        await client.query("ROLLBACK").catch(() => undefined);
+        throw error;
+      } finally { client.release(); }
+    } catch (error) { next(error); }
+  });
+
+  app.post("/api/v1/tasks/:taskId/assignments", authenticate(database), requirePermission(database, "tasks.manage"), async (req, res, next) => {
+    const taskId = z.string().uuid().safeParse(req.params.taskId);
+    const body = z.object({
+      userId: z.string().uuid().optional(),
+      teamId: z.string().uuid().optional(),
+      replaceExisting: z.boolean().default(false)
+    }).strict().safeParse(req.body);
+    const auth = req.auth;
+    if (!taskId.success || !body.success || !auth || Boolean(body.data.userId) === Boolean(body.data.teamId)) {
+      res.status(400).json({ error: { code: "VALIDATION_ERROR", message: "Choose exactly one active user or team to assign." } });
+      return;
+    }
+    try {
+      const client = await database.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query("SELECT set_config('app.actor_user_id',$1,true),set_config('app.request_id',$2,true)",[req.auth?.userId ?? "",res.locals.requestId]);
+        const task = await client.query("SELECT task_id,status FROM waste_mgmt.collection_tasks WHERE task_id=$1 AND fest_id=1 FOR UPDATE",[taskId.data]);
+        if (!task.rows[0] || !["open","assigned"].includes(task.rows[0].status)) {
+          await client.query("ROLLBACK");
+          res.status(409).json({ error: { code: "INVALID_TASK_STATE", message: "Only open or assigned tasks can receive assignments." } });
+          return;
+        }
+        if (body.data.userId) {
+          const user = await client.query("SELECT user_id FROM waste_mgmt.users WHERE user_id=$1 AND status='active'",[body.data.userId]);
+          if (user.rowCount !== 1) {
+            await client.query("ROLLBACK");
+            res.status(422).json({ error: { code: "INVALID_ASSIGNEE", message: "The selected user is not active." } });
+            return;
+          }
+        }
+        if (body.data.teamId) {
+          const team = await client.query("SELECT team_id FROM waste_mgmt.teams WHERE team_id=$1 AND is_active=TRUE",[body.data.teamId]);
+          if (team.rowCount !== 1) {
+            await client.query("ROLLBACK");
+            res.status(422).json({ error: { code: "INVALID_TEAM", message: "The selected team is not active." } });
+            return;
+          }
+        }
+        if (body.data.replaceExisting) {
+          await client.query("UPDATE waste_mgmt.task_assignments SET unassigned_at=now() WHERE task_id=$1 AND unassigned_at IS NULL",[taskId.data]);
+        }
+        const result = await client.query(
+          "INSERT INTO waste_mgmt.task_assignments(task_id,user_id,team_id,assigned_by) VALUES ($1,$2,$3,$4) " +
+          "RETURNING assignment_id AS \"assignmentId\",task_id AS \"taskId\",user_id AS \"userId\",team_id AS \"teamId\",assigned_at AS \"assignedAt\"",
+          [taskId.data,body.data.userId ?? null,body.data.teamId ?? null,auth.userId]
+        );
+        if (task.rows[0].status === "open") {
+          await client.query("UPDATE waste_mgmt.collection_tasks SET status='assigned' WHERE task_id=$1",[taskId.data]);
+        }
+        if (body.data.userId) {
+          await client.query(
+            "INSERT INTO waste_mgmt.notifications(user_id,type,title,body,resource_type,resource_id) VALUES ($1,'task_assignment','New collection task','A task has been assigned to you.','task',$2)",
+            [body.data.userId,taskId.data]
+          );
+        } else if (body.data.teamId) {
+          await client.query(
+            "INSERT INTO waste_mgmt.notifications(user_id,type,title,body,resource_type,resource_id) " +
+            "SELECT tm.user_id,'task_assignment','New team task','A task has been assigned to your team.','task',$2 " +
+            "FROM waste_mgmt.team_memberships tm JOIN waste_mgmt.users u ON u.user_id=tm.user_id AND u.status='active' " +
+            "WHERE tm.team_id=$1 AND tm.ends_at IS NULL AND tm.starts_at<=now()",
+            [body.data.teamId,taskId.data]
+          );
+        }
+        await client.query("COMMIT");
+        res.status(201).json({ data: result.rows[0] });
+      } catch (error) {
+        await client.query("ROLLBACK").catch(() => undefined);
+        throw error;
+      } finally { client.release(); }
+    } catch (error) { next(error); }
+  });
+
+  app.post("/api/v1/tasks/:taskId/close-no-waste", authenticate(database), requirePermission(database, "tasks.manage"), async (req, res, next) => {
+    const id = z.string().uuid().safeParse(req.params.taskId);
+    const body = z.object({ reason: z.string().trim().min(5).max(1000) }).strict().safeParse(req.body);
+    const auth = req.auth;
+    if (!id.success || !body.success || !auth) {
+      res.status(400).json({ error: { code: "VALIDATION_ERROR", message: "A task ID and closure reason are required." } });
+      return;
+    }
+    try {
+      const client = await database.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query("SELECT set_config('app.actor_user_id',$1,true),set_config('app.request_id',$2,true)",[req.auth?.userId ?? "",res.locals.requestId]);
+        const task = await client.query(
+          "SELECT task_id,status FROM waste_mgmt.collection_tasks WHERE task_id=$1 AND fest_id=1 FOR UPDATE",
+          [id.data]
+        );
+        if (!task.rows[0]) {
+          await client.query("ROLLBACK");
+          res.status(404).json({ error: { code: "TASK_NOT_FOUND", message: "Task not found." } });
+          return;
+        }
+        if (task.rows[0].status !== "in_progress") {
+          await client.query("ROLLBACK");
+          res.status(409).json({ error: { code: "INVALID_TASK_STATE", message: "Only an in-progress task can be closed as no-waste." } });
+          return;
+        }
+        await client.query(
+          "UPDATE waste_mgmt.collection_tasks SET status='verified',verified_by=$1,verified_at=now(),completed_at=now(),closure_reason=$2 WHERE task_id=$3",
+          [auth.userId,body.data.reason,id.data]
+        );
+        await client.query(
+          "UPDATE waste_mgmt.waste_reports r SET status='resolved' FROM waste_mgmt.report_task_links rtl " +
+          "WHERE rtl.task_id=$1 AND rtl.report_id=r.report_id AND rtl.link_type='primary' AND rtl.ended_at IS NULL AND r.status='in_progress'",
+          [id.data]
+        );
+        await client.query(
+          "UPDATE waste_mgmt.report_task_links SET ended_at=now() WHERE task_id=$1 AND link_type='primary' AND ended_at IS NULL",
+          [id.data]
+        );
+        await client.query("COMMIT");
+        res.status(200).json({ data: { taskId: id.data, status: "verified", closureReason: body.data.reason } });
+      } catch (error) {
+        await client.query("ROLLBACK").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/v1/tasks/:taskId/cancel", authenticate(database), requirePermission(database, "tasks.manage"), async (req, res, next) => {
+    const id = z.string().uuid().safeParse(req.params.taskId);
+    const body = z.object({ reason: z.string().trim().min(5).max(1000) }).strict().safeParse(req.body);
+    const auth = req.auth;
+    if (!id.success || !body.success || !auth) {
+      res.status(400).json({ error: { code: "VALIDATION_ERROR", message: "A task ID and cancellation reason are required." } });
+      return;
+    }
+    try {
+      const client = await database.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query("SELECT set_config('app.actor_user_id',$1,true),set_config('app.request_id',$2,true)",[req.auth?.userId ?? "",res.locals.requestId]);
+        const task = await client.query(
+          "SELECT task_id,status FROM waste_mgmt.collection_tasks WHERE task_id=$1 AND fest_id=1 FOR UPDATE",
+          [id.data]
+        );
+        if (!task.rows[0]) {
+          await client.query("ROLLBACK");
+          res.status(404).json({ error: { code: "TASK_NOT_FOUND", message: "Task not found." } });
+          return;
+        }
+        if (["verified","cancelled"].includes(task.rows[0].status)) {
+          await client.query("ROLLBACK");
+          res.status(409).json({ error: { code: "TERMINAL_TASK", message: "Verified or cancelled tasks cannot be cancelled again." } });
+          return;
+        }
+        await client.query(
+          "UPDATE waste_mgmt.collection_tasks SET status='cancelled',cancelled_at=now(),cancellation_reason=$1 WHERE task_id=$2",
+          [body.data.reason,id.data]
+        );
+        await client.query(
+          "UPDATE waste_mgmt.report_task_links SET ended_at=now() WHERE task_id=$1 AND link_type='primary' AND ended_at IS NULL",
+          [id.data]
+        );
+        await client.query("COMMIT");
+        res.status(200).json({ data: { taskId: id.data, status: "cancelled" } });
+      } catch (error) {
+        await client.query("ROLLBACK").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/v1/collection-submissions/:submissionId/decision", authenticate(database), requirePermission(database, "collections.verify"), async (req, res, next) => {
+    const id = z.string().uuid().safeParse(req.params.submissionId);
+    const body = z.object({
+      decision: z.enum(["verify","reject"]),
+      reason: z.string().trim().max(1000).optional()
+    }).strict().safeParse(req.body);
+    const auth = req.auth;
+    if (!id.success || !body.success || !auth) {
+      res.status(400).json({ error: { code: "VALIDATION_ERROR", message: "Invalid collection decision." } });
+      return;
+    }
+    if (body.data.decision === "reject" && !body.data.reason) {
+      res.status(422).json({ error: { code: "REASON_REQUIRED", message: "A reason is required when rejecting collection evidence." } });
+      return;
+    }
+    try {
+      const client = await database.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query("SELECT set_config('app.actor_user_id',$1,true),set_config('app.request_id',$2,true)",[req.auth?.userId ?? "",res.locals.requestId]);
+        const found = await client.query(
+          "SELECT submission_id,task_id,submitted_by,status FROM waste_mgmt.collection_submissions WHERE submission_id=$1 FOR UPDATE",
+          [id.data]
+        );
+        const submission = found.rows[0];
+        if (!submission) {
+          await client.query("ROLLBACK");
+          res.status(404).json({ error: { code: "SUBMISSION_NOT_FOUND", message: "Collection submission not found." } });
+          return;
+        }
+        if (submission.status !== "submitted") {
+          await client.query("ROLLBACK");
+          res.status(409).json({ error: { code: "SUBMISSION_ALREADY_DECIDED", message: "This collection submission has already been reviewed." } });
+          return;
+        }
+        const task = await client.query(
+          "SELECT task_id,status FROM waste_mgmt.collection_tasks WHERE task_id=$1 FOR UPDATE",
+          [submission.task_id]
+        );
+        if (task.rows[0]?.status !== "submitted_for_verification") {
+          await client.query("ROLLBACK");
+          res.status(409).json({ error: { code: "INVALID_TASK_STATE", message: "The task is not waiting for verification." } });
+          return;
+        }
+        const nextStatus = body.data.decision === "verify" ? "verified" : "rejected";
+        await client.query(
+          "UPDATE waste_mgmt.collection_submissions SET status=$1,verified_by=$2,verified_at=now(),verification_note=$3 WHERE submission_id=$4",
+          [nextStatus,auth.userId,body.data.reason ?? null,id.data]
+        );
+        if (nextStatus === "verified") {
+          await client.query(
+            "UPDATE waste_mgmt.collection_tasks SET status='verified',verified_by=$1,verified_at=now(),completed_at=now() WHERE task_id=$2",
+            [auth.userId,submission.task_id]
+          );
+          await client.query(
+            "UPDATE waste_mgmt.waste_reports r SET status='resolved' " +
+            "FROM waste_mgmt.report_task_links rtl " +
+            "WHERE rtl.task_id=$1 AND rtl.report_id=r.report_id AND rtl.link_type='primary' " +
+            "AND rtl.ended_at IS NULL AND r.status='in_progress'",
+            [submission.task_id]
+          );
+          await client.query(
+            "UPDATE waste_mgmt.report_task_links SET ended_at=now() WHERE task_id=$1 AND link_type='primary' AND ended_at IS NULL",
+            [submission.task_id]
+          );
+        } else {
+          await client.query(
+            "UPDATE waste_mgmt.collection_tasks SET status='in_progress' WHERE task_id=$1",
+            [submission.task_id]
+          );
+        }
+        await client.query(
+          "INSERT INTO waste_mgmt.notifications(user_id,type,title,body,resource_type,resource_id) " +
+          "VALUES ($1,'task_update',$2,$3,'task',$4)",
+          [
+            submission.submitted_by,
+            nextStatus === "verified" ? "Collection verified" : "Collection needs correction",
+            nextStatus === "verified" ? "Your submitted collection evidence was verified." : (body.data.reason ?? "Please review the manager feedback and submit corrected evidence."),
+            submission.task_id
+          ]
+        );
+        await client.query("COMMIT");
+        res.status(200).json({ data: { submissionId: id.data, taskId: submission.task_id, status: nextStatus } });
+      } catch (error) {
+        await client.query("ROLLBACK").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/v1/tasks/:taskId/start", authenticate(database), requirePermission(database, "tasks.execute"), async (req, res, next) => {
+    const id = z.string().uuid().safeParse(req.params.taskId);
+    const auth = req.auth;
+    if (!id.success || !auth) {
+      res.status(404).json({ error: { code: "TASK_NOT_FOUND", message: "Task not found." } });
+      return;
+    }
+    try {
+      const scope = taskScope(auth.userId, auth.roles, 2);
+      const result = await auditedMutation(database,req,res,async client => {
+        const current = await client.query(
+          "SELECT t.task_id,t.status FROM waste_mgmt.collection_tasks t " +
+          "WHERE t.task_id=$1 AND t.fest_id=1 AND " + scope.sql + " FOR UPDATE",
+          [id.data,...scope.values]
+        );
+        const task = current.rows[0];
+        if (!task) return "missing" as const;
+        if (task.status === "in_progress") return "started" as const;
+        if (task.status !== "assigned") return "invalid" as const;
+        await client.query(
+          "UPDATE waste_mgmt.collection_tasks SET status='in_progress', started_at=COALESCE(started_at,now()) WHERE task_id=$1",
+          [id.data]
+        );
+        return "started" as const;
+      });
+      if (result === "missing") {
+        res.status(404).json({ error: { code: "TASK_NOT_FOUND", message: "Task not found." } });
+        return;
+      }
+      if (result === "invalid") {
+        res.status(409).json({ error: { code: "INVALID_TASK_STATE", message: "Only assigned tasks can be started." } });
+        return;
+      }
+      res.status(200).json({ data: { taskId: id.data, status: "in_progress" } });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/v1/tasks/:taskId/submissions", authenticate(database), requirePermission(database, "collections.submit"), async (req, res, next) => {
+    const id = z.string().uuid().safeParse(req.params.taskId);
+    const body = z.object({
+      notes: z.string().trim().max(2000).optional(),
+      records: z.array(z.object({
+        categoryId: z.coerce.number().int().positive(),
+        enteredWeight: z.coerce.number().positive().max(10000000),
+        enteredUnit: z.enum(["kg","g"]),
+        measurementMethod: z.enum(["weighing_scale","estimated","count_converted"]),
+        notes: z.string().trim().max(500).optional()
+      }).strict()).min(1).max(20)
+    }).strict().safeParse(req.body);
+    const auth = req.auth;
+    if (!id.success || !body.success || !auth) {
+      res.status(400).json({ error: { code: "VALIDATION_ERROR", message: "Invalid collection submission." } });
+      return;
+    }
+    if (body.data.records.some(record => record.enteredUnit === "g" && !Number.isInteger(record.enteredWeight))) {
+      res.status(422).json({ error: { code: "INVALID_WEIGHT_PRECISION", message: "Gram measurements must be whole numbers; kilogram measurements may use up to three decimal places." } });
+      return;
+    }
+    try {
+      const client = await database.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query("SELECT set_config('app.actor_user_id',$1,true),set_config('app.request_id',$2,true)",[req.auth?.userId ?? "",res.locals.requestId]);
+        const scope = taskScope(auth.userId,auth.roles,2);
+        const taskResult = await client.query(
+          "SELECT t.task_id,t.status FROM waste_mgmt.collection_tasks t WHERE t.task_id=$1 AND t.fest_id=1 AND " + scope.sql + " FOR UPDATE",
+          [id.data,...scope.values]
+        );
+        const task = taskResult.rows[0];
+        if (!task) {
+          await client.query("ROLLBACK");
+          res.status(404).json({ error: { code: "TASK_NOT_FOUND", message: "Task not found." } });
+          return;
+        }
+        if (task.status !== "in_progress") {
+          await client.query("ROLLBACK");
+          res.status(409).json({ error: { code: "INVALID_TASK_STATE", message: "Start the assigned task before submitting collection evidence." } });
+          return;
+        }
+        const inserted = await client.query(
+          "INSERT INTO waste_mgmt.collection_submissions(task_id,submitted_by,notes) VALUES ($1,$2,$3) RETURNING submission_id AS \"submissionId\"",
+          [id.data,auth.userId,body.data.notes ?? null]
+        );
+        const submissionId = inserted.rows[0]?.submissionId;
+        if (!submissionId) throw new Error("Collection submission could not be created.");
+        for (const record of body.data.records) {
+          const category = await client.query(
+            "SELECT category_id FROM waste_mgmt.waste_categories WHERE category_id=$1 AND is_active=TRUE",
+            [record.categoryId]
+          );
+          if (category.rowCount !== 1) {
+            await client.query("ROLLBACK");
+            res.status(422).json({ error: { code: "INVALID_CATEGORY", message: "A submitted waste category is not active." } });
+            return;
+          }
+          const weightKg = record.enteredUnit === "kg" ? record.enteredWeight : record.enteredWeight / 1000;
+          await client.query(
+            "INSERT INTO waste_mgmt.collection_records(submission_id,category_id,entered_weight,entered_unit,weight_kg,measurement_method,notes) " +
+            "VALUES ($1,$2,$3,$4,$5,$6,$7)",
+            [submissionId,record.categoryId,record.enteredWeight,record.enteredUnit,weightKg.toFixed(3),record.measurementMethod,record.notes ?? null]
+          );
+        }
+        await client.query(
+          "UPDATE waste_mgmt.collection_tasks SET status='submitted_for_verification', submitted_at=now() WHERE task_id=$1",
+          [id.data]
+        );
+        await client.query(
+          "INSERT INTO waste_mgmt.notifications(user_id,type,title,body,resource_type,resource_id) " +
+          "SELECT ur.user_id,'task_update','Collection awaiting verification',$2,'task',$3 " +
+          "FROM waste_mgmt.user_roles ur JOIN waste_mgmt.roles r ON r.role_id=ur.role_id " +
+          "JOIN waste_mgmt.users u ON u.user_id=ur.user_id AND u.status='active' " +
+          "WHERE r.role_key IN ('administrator','waste_manager')",
+          ["A volunteer submitted collection evidence for review.",id.data]
+        );
+        await client.query("COMMIT");
+        res.status(201).json({ data: { submissionId, taskId: id.data, status: "submitted" } });
+      } catch (error) {
+        await client.query("ROLLBACK").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/v1/tasks", authenticate(database), requirePermission(database, "tasks.manage"), async (req, res, next) => {
+    const body = z.object({
+      areaId: z.string().uuid(),
+      title: z.string().trim().min(3).max(160),
+      instructions: z.string().trim().max(3000).optional(),
+      priority: z.enum(["low","normal","high","urgent"]).default("normal"),
+      dueAt: z.string().datetime().optional(),
+      reportId: z.string().uuid().optional(),
+      assignedUserId: z.string().uuid().optional(),
+      assignedTeamId: z.string().uuid().optional()
+    }).strict().safeParse(req.body);
+    const auth = req.auth;
+    if (!body.success || !auth) {
+      res.status(400).json({ error: { code: "VALIDATION_ERROR", message: "Invalid task details." } });
+      return;
+    }
+    if (body.data.assignedUserId && body.data.assignedTeamId) {
+      res.status(422).json({ error: { code: "INVALID_ASSIGNMENT", message: "Assign a task to one user or one team, not both." } });
+      return;
+    }
+    try {
+      const client = await database.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query("SELECT set_config('app.actor_user_id',$1,true),set_config('app.request_id',$2,true)",[req.auth?.userId ?? "",res.locals.requestId]);
+        const area = await client.query(
+          "SELECT area_id FROM waste_mgmt.areas WHERE area_id=$1 AND fest_id=1 AND is_active=TRUE FOR SHARE",
+          [body.data.areaId]
+        );
+        if (area.rowCount !== 1) {
+          await client.query("ROLLBACK");
+          res.status(422).json({ error: { code: "INVALID_AREA", message: "The selected area is not active." } });
+          return;
+        }
+        let linkedReportStatus: string | null = null;
+        if (body.data.reportId) {
+          const report = await client.query(
+            "SELECT report_id,status,area_id FROM waste_mgmt.waste_reports WHERE report_id=$1 AND fest_id=1 FOR UPDATE",
+            [body.data.reportId]
+          );
+          const row = report.rows[0];
+          if (!row || !["accepted","in_progress"].includes(row.status) || row.area_id !== body.data.areaId) {
+            await client.query("ROLLBACK");
+            res.status(409).json({ error: { code: "REPORT_NOT_ACTIONABLE", message: "Only an accepted report in the same area can create a primary collection task." } });
+            return;
+          }
+          linkedReportStatus = row.status;
+        }
+        if (body.data.reportId) {
+          const activeLink = await client.query(
+            "SELECT task_id FROM waste_mgmt.report_task_links WHERE report_id=$1 AND link_type='primary' AND ended_at IS NULL",
+            [body.data.reportId]
+          );
+          if (activeLink.rowCount) {
+            await client.query("ROLLBACK");
+            res.status(409).json({ error: { code: "REPORT_ALREADY_ASSIGNED", message: "This report already has an active primary collection task." } });
+            return;
+          }
+        }
+        if (body.data.assignedUserId) {
+          const user = await client.query("SELECT user_id FROM waste_mgmt.users WHERE user_id=$1 AND status='active'",[body.data.assignedUserId]);
+          if (user.rowCount !== 1) {
+            await client.query("ROLLBACK");
+            res.status(422).json({ error: { code: "INVALID_ASSIGNEE", message: "The selected user is not active." } });
+            return;
+          }
+        }
+        if (body.data.assignedTeamId) {
+          const team = await client.query("SELECT team_id FROM waste_mgmt.teams WHERE team_id=$1 AND is_active=TRUE",[body.data.assignedTeamId]);
+          if (team.rowCount !== 1) {
+            await client.query("ROLLBACK");
+            res.status(422).json({ error: { code: "INVALID_TEAM", message: "The selected team is not active." } });
+            return;
+          }
+        }
+        const inserted = await client.query(
+          "INSERT INTO waste_mgmt.collection_tasks(fest_id,area_id,title,instructions,priority,due_at,created_by) " +
+          "VALUES (1,$1,$2,$3,$4,$5,$6) RETURNING task_id AS \"taskId\", status",
+          [body.data.areaId,body.data.title,body.data.instructions ?? null,body.data.priority,body.data.dueAt ?? null,auth.userId]
+        );
+        const task = inserted.rows[0];
+        if (!task) throw new Error("Task creation returned no row.");
+        await client.query(
+          "INSERT INTO waste_mgmt.task_status_history(task_id,from_status,to_status,changed_by) VALUES ($1,NULL,'open',$2)",
+          [task.taskId,auth.userId]
+        );
+        if (body.data.reportId) {
+          await client.query(
+            "INSERT INTO waste_mgmt.report_task_links(report_id,task_id,link_type,linked_by) VALUES ($1,$2,'primary',$3)",
+            [body.data.reportId,task.taskId,auth.userId]
+          );
+          if (linkedReportStatus === "accepted") {
+            await client.query(
+              "UPDATE waste_mgmt.waste_reports SET status='in_progress' WHERE report_id=$1",
+              [body.data.reportId]
+            );
+          }
+        }
+        if (body.data.assignedUserId || body.data.assignedTeamId) {
+          await client.query(
+            "INSERT INTO waste_mgmt.task_assignments(task_id,user_id,team_id,assigned_by) VALUES ($1,$2,$3,$4)",
+            [task.taskId,body.data.assignedUserId ?? null,body.data.assignedTeamId ?? null,auth.userId]
+          );
+          await client.query("UPDATE waste_mgmt.collection_tasks SET status='assigned' WHERE task_id=$1",[task.taskId]);
+          if (body.data.assignedUserId) {
+            await client.query(
+              "INSERT INTO waste_mgmt.notifications(user_id,type,title,body,resource_type,resource_id) VALUES ($1,'task_assignment','New collection task',$2,'task',$3)",
+              [body.data.assignedUserId,body.data.title,task.taskId]
+            );
+          } else if (body.data.assignedTeamId) {
+            await client.query(
+              "INSERT INTO waste_mgmt.notifications(user_id,type,title,body,resource_type,resource_id) " +
+              "SELECT tm.user_id,'task_assignment','New team collection task',$2,'task',$3 " +
+              "FROM waste_mgmt.team_memberships tm JOIN waste_mgmt.users u ON u.user_id=tm.user_id AND u.status='active' " +
+              "WHERE tm.team_id=$1 AND tm.ends_at IS NULL AND tm.starts_at<=now()",
+              [body.data.assignedTeamId,body.data.title,task.taskId]
+            );
+          }
+        }
+        await client.query("COMMIT");
+        res.status(201).json({ data: { ...task, status: body.data.assignedUserId || body.data.assignedTeamId ? "assigned" : "open" } });
+      } catch (error) {
+        await client.query("ROLLBACK").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    } catch (error) {
+      next(error);
+    }
+  });
+
+
+
+
+
+  app.get("/api/v1/cleaning-rounds", authenticate(database), requirePermission(database, "tasks.read"), async (req,res,next)=>{
+    const auth=req.auth;
+    if(!auth){res.status(401).json({error:{code:"UNAUTHENTICATED",message:"Sign in to continue."}});return;}
+    try{
+      const scope=taskScope(auth.userId,auth.roles,1);
+      const scopedRoundTasks=scope.sql==="TRUE" ? "TRUE" : "EXISTS (SELECT 1 FROM waste_mgmt.collection_tasks st WHERE st.round_id=cr.round_id AND "+scope.sql.replaceAll("t.task_id","st.task_id")+")";
+      const result=await database.query(
+        "SELECT cr.round_id AS \"roundId\",cr.title,cr.instructions,cr.status,cr.planned_start_at AS \"plannedStartAt\", " +
+        "cr.planned_end_at AS \"plannedEndAt\",a.name AS \"areaName\",z.name AS \"zoneName\",COUNT(DISTINCT t.task_id)::int AS \"taskCount\" " +
+        "FROM waste_mgmt.cleaning_rounds cr JOIN waste_mgmt.areas a ON a.area_id=cr.area_id " +
+        "JOIN waste_mgmt.zones z ON z.zone_id=a.zone_id LEFT JOIN waste_mgmt.collection_tasks t ON t.round_id=cr.round_id " +
+        "WHERE cr.fest_id=1 AND (" +
+        scopedRoundTasks +
+        ") GROUP BY cr.round_id,a.name,z.name ORDER BY cr.planned_start_at DESC",
+        scope.values
+      );
+      res.status(200).json({data:result.rows});
+    }catch(error){next(error);}
+  });
+
+  app.post("/api/v1/cleaning-rounds", authenticate(database), requirePermission(database, "tasks.manage"), async (req,res,next)=>{
+    const body=z.object({
+      areaId:z.string().uuid(),
+      title:z.string().trim().min(3).max(160),
+      instructions:z.string().trim().max(3000).optional(),
+      plannedStartAt:z.string().datetime(),
+      plannedEndAt:z.string().datetime()
+    }).strict().safeParse(req.body);
+    const auth=req.auth;
+    if(!body.success||!auth){res.status(400).json({error:{code:"VALIDATION_ERROR",message:"Invalid cleaning round details."}});return;}
+    if(new Date(body.data.plannedEndAt)<=new Date(body.data.plannedStartAt)){
+      res.status(422).json({error:{code:"INVALID_ROUND_WINDOW",message:"The planned end time must be after the start time."}});
+      return;
+    }
+    try{
+      const client=await database.connect();
+      try{
+        await client.query("BEGIN");
+        await client.query("SELECT set_config('app.actor_user_id',$1,true),set_config('app.request_id',$2,true)",[req.auth?.userId ?? "",res.locals.requestId]);
+        const area=await client.query("SELECT area_id FROM waste_mgmt.areas WHERE area_id=$1 AND fest_id=1 AND is_active=TRUE",[body.data.areaId]);
+        if(area.rowCount!==1){
+          await client.query("ROLLBACK");
+          res.status(422).json({error:{code:"INVALID_AREA",message:"The selected area is not active."}});
+          return;
+        }
+        const result=await client.query(
+          "INSERT INTO waste_mgmt.cleaning_rounds(fest_id,area_id,title,instructions,planned_start_at,planned_end_at,created_by) " +
+          "VALUES (1,$1,$2,$3,$4,$5,$6) RETURNING round_id AS \"roundId\",title,status,planned_start_at AS \"plannedStartAt\",planned_end_at AS \"plannedEndAt\"",
+          [body.data.areaId,body.data.title,body.data.instructions??null,body.data.plannedStartAt,body.data.plannedEndAt,auth.userId]
+        );
+        await client.query("COMMIT");
+        res.status(201).json({data:result.rows[0]});
+      }catch(error){await client.query("ROLLBACK").catch(()=>undefined);throw error;}
+      finally{client.release();}
+    }catch(error){next(error);}
+  });
+
+
+  app.post("/api/v1/cleaning-rounds/:roundId/tasks", authenticate(database), requirePermission(database, "tasks.manage"), async (req,res,next)=>{
+    const roundId=z.string().uuid().safeParse(req.params.roundId);
+    const body=z.object({
+      title:z.string().trim().min(3).max(160),
+      instructions:z.string().trim().max(3000).optional(),
+      priority:z.enum(["low","normal","high","urgent"]).default("normal"),
+      dueAt:z.string().datetime().optional(),
+      assignedUserId:z.string().uuid().optional(),
+      assignedTeamId:z.string().uuid().optional()
+    }).strict().safeParse(req.body);
+    const auth=req.auth;
+    if(!roundId.success||!body.success||!auth||Boolean(body.data.assignedUserId)&&Boolean(body.data.assignedTeamId)){
+      res.status(400).json({error:{code:"VALIDATION_ERROR",message:"Invalid round task details or assignment."}});
+      return;
+    }
+    try{
+      const client=await database.connect();
+      try{
+        await client.query("BEGIN");
+        await client.query("SELECT set_config('app.actor_user_id',$1,true),set_config('app.request_id',$2,true)",[req.auth?.userId ?? "",res.locals.requestId]);
+        const round=await client.query(
+          "SELECT round_id,area_id,status,planned_end_at FROM waste_mgmt.cleaning_rounds WHERE round_id=$1 AND fest_id=1 FOR UPDATE",
+          [roundId.data]
+        );
+        const current=round.rows[0];
+        if(!current||!["scheduled","active"].includes(current.status)){
+          await client.query("ROLLBACK");
+          res.status(409).json({error:{code:"ROUND_NOT_ACTIVE",message:"Tasks can only be added to a scheduled or active cleaning round."}});
+          return;
+        }
+        if(body.data.dueAt&&new Date(body.data.dueAt)>new Date(current.planned_end_at)){
+          await client.query("ROLLBACK");
+          res.status(422).json({error:{code:"TASK_DUE_AFTER_ROUND",message:"A task due time cannot be later than the round end time."}});
+          return;
+        }
+        if(body.data.assignedUserId){
+          const user=await client.query("SELECT user_id FROM waste_mgmt.users WHERE user_id=$1 AND status='active'",[body.data.assignedUserId]);
+          if(user.rowCount!==1){await client.query("ROLLBACK");res.status(422).json({error:{code:"INVALID_ASSIGNEE",message:"The selected user is not active."}});return;}
+        }
+        if(body.data.assignedTeamId){
+          const team=await client.query("SELECT team_id FROM waste_mgmt.teams WHERE team_id=$1 AND is_active=TRUE",[body.data.assignedTeamId]);
+          if(team.rowCount!==1){await client.query("ROLLBACK");res.status(422).json({error:{code:"INVALID_TEAM",message:"The selected team is not active."}});return;}
+        }
+        const inserted=await client.query(
+          "INSERT INTO waste_mgmt.collection_tasks(fest_id,round_id,area_id,title,instructions,priority,due_at,created_by) " +
+          "VALUES (1,$1,$2,$3,$4,$5,$6,$7) RETURNING task_id AS \"taskId\",status",
+          [roundId.data,current.area_id,body.data.title,body.data.instructions??null,body.data.priority,body.data.dueAt??null,auth.userId]
+        );
+        const task=inserted.rows[0];
+        if(!task)throw new Error("Round task creation returned no row.");
+        await client.query(
+          "INSERT INTO waste_mgmt.task_status_history(task_id,from_status,to_status,changed_by) VALUES ($1,NULL,'open',$2)",
+          [task.taskId,auth.userId]
+        );
+        if(body.data.assignedUserId||body.data.assignedTeamId){
+          await client.query(
+            "INSERT INTO waste_mgmt.task_assignments(task_id,user_id,team_id,assigned_by) VALUES ($1,$2,$3,$4)",
+            [task.taskId,body.data.assignedUserId??null,body.data.assignedTeamId??null,auth.userId]
+          );
+          await client.query("UPDATE waste_mgmt.collection_tasks SET status='assigned' WHERE task_id=$1",[task.taskId]);
+          if(body.data.assignedUserId){
+            await client.query(
+              "INSERT INTO waste_mgmt.notifications(user_id,type,title,body,resource_type,resource_id) VALUES ($1,'task_assignment','New collection task',$2,'task',$3)",
+              [body.data.assignedUserId,body.data.title,task.taskId]
+            );
+          }else if(body.data.assignedTeamId){
+            await client.query(
+              "INSERT INTO waste_mgmt.notifications(user_id,type,title,body,resource_type,resource_id) " +
+              "SELECT tm.user_id,'task_assignment','New team task',$2,'task',$3 FROM waste_mgmt.team_memberships tm " +
+              "JOIN waste_mgmt.users u ON u.user_id=tm.user_id AND u.status='active' " +
+              "WHERE tm.team_id=$1 AND tm.ends_at IS NULL AND tm.starts_at<=now()",
+              [body.data.assignedTeamId,body.data.title,task.taskId]
+            );
+          }
+        }
+        await client.query("COMMIT");
+        res.status(201).json({data:{...task,status:body.data.assignedUserId||body.data.assignedTeamId?"assigned":"open"}});
+      }catch(error){await client.query("ROLLBACK").catch(()=>undefined);throw error;}
+      finally{client.release();}
+    }catch(error){next(error);}
+  });
+
+  app.patch("/api/v1/cleaning-rounds/:roundId/status", authenticate(database), requirePermission(database, "tasks.manage"), async (req,res,next)=>{
+    const id=z.string().uuid().safeParse(req.params.roundId);
+    const body=z.object({status:z.enum(["draft","scheduled","active","completed","cancelled"])}).strict().safeParse(req.body);
+    if(!id.success||!body.success){res.status(400).json({error:{code:"VALIDATION_ERROR",message:"Invalid cleaning round status."}});return;}
+    const allowed:Record<string,string[]>={draft:["scheduled","cancelled"],scheduled:["active","cancelled"],active:["completed","cancelled"],completed:[],cancelled:[]};
+    try{
+      const outcome=await auditedMutation(database,req,res,async client=>{
+        const current=await client.query("SELECT status FROM waste_mgmt.cleaning_rounds WHERE round_id=$1 AND fest_id=1 FOR UPDATE",[id.data]);
+        if(!current.rows[0])return {kind:"missing" as const};
+        if(!allowed[String(current.rows[0].status)]?.includes(body.data.status))return {kind:"invalid" as const};
+        const result=await client.query(
+          "UPDATE waste_mgmt.cleaning_rounds SET status=$1 WHERE round_id=$2 RETURNING round_id AS \"roundId\",status",
+          [body.data.status,id.data]
+        );
+        return {kind:"updated" as const,data:result.rows[0]};
+      });
+      if(outcome.kind==="missing"){res.status(404).json({error:{code:"ROUND_NOT_FOUND",message:"Cleaning round not found."}});return;}
+      if(outcome.kind==="invalid"){res.status(409).json({error:{code:"INVALID_ROUND_TRANSITION",message:"The cleaning round cannot move to the requested status."}});return;}
+      res.status(200).json({data:outcome.data});
+    }catch(error){next(error);}
+  });
+
+  app.get("/api/v1/materials/overview", authenticate(database), requirePermission(database, "materials.manage"), async (_req,res,next)=>{
+    try{
+      const [batches,segregations,destinations,allocations]=await Promise.all([
+        database.query(
+          "SELECT mb.batch_id AS \"batchId\",mb.available_weight_kg AS \"availableWeightKg\",v.remaining_weight_kg AS \"remainingWeightKg\", " +
+          "wc.name AS \"sourceCategory\",cr.weight_kg AS \"sourceWeightKg\",cs.task_id AS \"taskId\",mb.created_at AS \"createdAt\" " +
+          "FROM waste_mgmt.material_batches mb JOIN waste_mgmt.collection_records cr ON cr.collection_record_id=mb.collection_record_id " +
+          "JOIN waste_mgmt.waste_categories wc ON wc.category_id=cr.category_id " +
+          "JOIN waste_mgmt.collection_submissions cs ON cs.submission_id=cr.submission_id " +
+          "JOIN waste_mgmt.v_material_balance v ON v.batch_id=mb.batch_id ORDER BY mb.created_at DESC"
+        ),
+        database.query(
+          "SELECT sr.segregation_id AS \"segregationId\",sr.source_batch_id AS \"sourceBatchId\",sr.weight_kg AS \"producedWeightKg\", " +
+          "v.remaining_weight_kg AS \"remainingWeightKg\",wc.name AS \"outputCategory\",sr.recorded_at AS \"recordedAt\" " +
+          "FROM waste_mgmt.segregation_records sr JOIN waste_mgmt.waste_categories wc ON wc.category_id=sr.output_category_id " +
+          "JOIN waste_mgmt.v_segregation_balance v ON v.segregation_id=sr.segregation_id ORDER BY sr.recorded_at DESC"
+        ),
+        database.query("SELECT destination_id AS \"destinationId\",destination_type AS \"destinationType\",name,contact_info AS \"contactInfo\" FROM waste_mgmt.material_destinations WHERE is_active=TRUE ORDER BY name"),
+        database.query(
+          "SELECT ma.allocation_id AS \"allocationId\",ma.weight_kg AS \"weightKg\",md.name AS destination,md.destination_type AS \"destinationType\",ma.allocated_at AS \"allocatedAt\" " +
+          "FROM waste_mgmt.material_allocations ma JOIN waste_mgmt.material_destinations md ON md.destination_id=ma.destination_id ORDER BY ma.allocated_at DESC LIMIT 100"
+        )
+      ]);
+      res.status(200).json({data:{batches:batches.rows,segregations:segregations.rows,destinations:destinations.rows,allocations:allocations.rows}});
+    }catch(error){next(error);}
+  });
+
+  app.post("/api/v1/materials/destinations", authenticate(database), requirePermission(database, "materials.manage"), async (req,res,next)=>{
+    const body=z.object({
+      destinationType:z.enum(["recycling","disposal","composting","reuse"]),
+      name:z.string().trim().min(2).max(160),
+      contactInfo:z.string().trim().max(1000).optional()
+    }).strict().safeParse(req.body);
+    const auth=req.auth;
+    if(!body.success||!auth){res.status(400).json({error:{code:"VALIDATION_ERROR",message:"Invalid material destination."}});return;}
+    try{
+      const client=await database.connect();
+      try{
+        await client.query("BEGIN");
+        await client.query("SELECT set_config('app.actor_user_id',$1,true),set_config('app.request_id',$2,true)",[req.auth?.userId ?? "",res.locals.requestId]);
+        const result=await client.query(
+          "INSERT INTO waste_mgmt.material_destinations(destination_type,name,contact_info) VALUES ($1,$2,$3) " +
+          "RETURNING destination_id AS \"destinationId\",destination_type AS \"destinationType\",name",
+          [body.data.destinationType,body.data.name,body.data.contactInfo??null]
+        );
+        await client.query("COMMIT");
+        res.status(201).json({data:result.rows[0]});
+      }catch(error){await client.query("ROLLBACK").catch(()=>undefined);throw error;}
+      finally{client.release();}
+    }catch(error){next(error);}
+  });
+
+  app.post("/api/v1/materials/batches/:batchId/segregations", authenticate(database), requirePermission(database, "materials.manage"), async (req,res,next)=>{
+    const batchId=z.string().uuid().safeParse(req.params.batchId);
+    const body=z.object({
+      outputCategoryId:z.coerce.number().int().positive(),
+      weightKg:z.coerce.number().positive().max(1000000),
+      notes:z.string().trim().max(1000).optional()
+    }).strict().safeParse(req.body);
+    const auth=req.auth;
+    if(!batchId.success||!body.success||!auth){res.status(400).json({error:{code:"VALIDATION_ERROR",message:"Invalid segregation details."}});return;}
+    try{
+      const client=await database.connect();
+      try{
+        await client.query("BEGIN");
+        await client.query("SELECT set_config('app.actor_user_id',$1,true),set_config('app.request_id',$2,true)",[req.auth?.userId ?? "",res.locals.requestId]);
+        const category=await client.query("SELECT category_id FROM waste_mgmt.waste_categories WHERE category_id=$1 AND is_active=TRUE",[body.data.outputCategoryId]);
+        if(category.rowCount!==1){
+          await client.query("ROLLBACK");
+          res.status(422).json({error:{code:"INVALID_CATEGORY",message:"The output category is not active."}});
+          return;
+        }
+        const result=await client.query(
+          "INSERT INTO waste_mgmt.segregation_records(source_batch_id,output_category_id,weight_kg,recorded_by,notes) " +
+          "VALUES ($1,$2,$3,$4,$5) RETURNING segregation_id AS \"segregationId\",source_batch_id AS \"sourceBatchId\",weight_kg AS \"weightKg\"",
+          [batchId.data,body.data.outputCategoryId,body.data.weightKg.toFixed(3),auth.userId,body.data.notes??null]
+        );
+        await client.query("COMMIT");
+        res.status(201).json({data:result.rows[0]});
+      }catch(error){await client.query("ROLLBACK").catch(()=>undefined);throw error;}
+      finally{client.release();}
+    }catch(error){next(error);}
+  });
+
+  app.post("/api/v1/materials/allocations", authenticate(database), requirePermission(database, "materials.manage"), async (req,res,next)=>{
+    const body=z.object({
+      sourceBatchId:z.string().uuid().optional(),
+      sourceSegregationId:z.string().uuid().optional(),
+      destinationId:z.string().uuid(),
+      weightKg:z.coerce.number().positive().max(1000000),
+      notes:z.string().trim().max(1000).optional()
+    }).strict().safeParse(req.body);
+    const auth=req.auth;
+    if(!body.success||!auth||Boolean(body.data.sourceBatchId)===Boolean(body.data.sourceSegregationId)){
+      res.status(400).json({error:{code:"VALIDATION_ERROR",message:"Choose exactly one material source and provide a destination and positive weight."}});
+      return;
+    }
+    try{
+      const client=await database.connect();
+      try{
+        await client.query("BEGIN");
+        await client.query("SELECT set_config('app.actor_user_id',$1,true),set_config('app.request_id',$2,true)",[req.auth?.userId ?? "",res.locals.requestId]);
+        const destination=await client.query("SELECT destination_id FROM waste_mgmt.material_destinations WHERE destination_id=$1 AND is_active=TRUE",[body.data.destinationId]);
+        if(destination.rowCount!==1){
+          await client.query("ROLLBACK");
+          res.status(422).json({error:{code:"INVALID_DESTINATION",message:"The selected material destination is not active."}});
+          return;
+        }
+        const result=await client.query(
+          "INSERT INTO waste_mgmt.material_allocations(source_batch_id,source_segregation_id,destination_id,weight_kg,allocated_by,notes) " +
+          "VALUES ($1,$2,$3,$4,$5,$6) RETURNING allocation_id AS \"allocationId\",weight_kg AS \"weightKg\",allocated_at AS \"allocatedAt\"",
+          [body.data.sourceBatchId??null,body.data.sourceSegregationId??null,body.data.destinationId,body.data.weightKg.toFixed(3),auth.userId,body.data.notes??null]
+        );
+        await client.query("COMMIT");
+        res.status(201).json({data:result.rows[0]});
+      }catch(error){await client.query("ROLLBACK").catch(()=>undefined);throw error;}
+      finally{client.release();}
+    }catch(error){next(error);}
+  });
+
+  app.get("/api/v1/analytics/overview", authenticate(database), requirePermission(database, "analytics.read"), async (_req, res, next) => {
+    try {
+      const [reportCounts,taskCounts,verifiedWeights,destinationWeights,remainingWeight,zoneReports] = await Promise.all([
+        database.query("SELECT status,COUNT(*)::int AS count FROM waste_mgmt.waste_reports WHERE fest_id=1 GROUP BY status ORDER BY status"),
+        database.query("SELECT status,COUNT(*)::int AS count FROM waste_mgmt.collection_tasks WHERE fest_id=1 GROUP BY status ORDER BY status"),
+        database.query("SELECT category_name AS \"categoryName\",verified_weight_kg AS \"weightKg\",verified_record_count AS \"recordCount\" FROM waste_mgmt.v_verified_collection_totals ORDER BY verified_weight_kg DESC"),
+        database.query("SELECT md.destination_type AS \"destinationType\",SUM(ma.weight_kg) AS \"weightKg\" " +
+          "FROM waste_mgmt.material_allocations ma JOIN waste_mgmt.material_destinations md ON md.destination_id=ma.destination_id " +
+          "GROUP BY md.destination_type ORDER BY md.destination_type"),
+        database.query("SELECT (SELECT COALESCE(SUM(remaining_weight_kg),0) FROM waste_mgmt.v_material_balance) + " + "(SELECT COALESCE(SUM(remaining_weight_kg),0) FROM waste_mgmt.v_segregation_balance) AS \"remainingWeightKg\""),
+        database.query("SELECT z.name AS \"zoneName\",COUNT(r.report_id)::int AS \"reportCount\" " +
+          "FROM waste_mgmt.zones z LEFT JOIN waste_mgmt.areas a ON a.zone_id=z.zone_id " +
+          "LEFT JOIN waste_mgmt.waste_reports r ON r.area_id=a.area_id " +
+          "GROUP BY z.zone_id,z.name ORDER BY \"reportCount\" DESC")
+      ]);
+      res.status(200).json({
+        data: {
+          reportCounts: reportCounts.rows,
+          taskCounts: taskCounts.rows,
+          verifiedWeights: verifiedWeights.rows,
+          destinationWeights: destinationWeights.rows,
+          remainingWeightKg: remainingWeight.rows[0]?.remainingWeightKg ?? 0,
+          reportsByZone: zoneReports.rows
+        }
+      });
+    } catch (error) { next(error); }
+  });
+
+  app.get("/api/v1/analytics/final-report", authenticate(database), requirePermission(database, "analytics.read"), async (req, res, next) => {
+    const filters = z.object({
+      from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/)
+    }).strict().safeParse(req.query);
+    if (!filters.success) {
+      res.status(400).json({ error: { code: "INVALID_REPORT_WINDOW", message: "Provide from and to dates in YYYY-MM-DD format." } });
+      return;
+    }
+    const from = new Date(filters.data.from + "T00:00:00Z");
+    const to = new Date(filters.data.to + "T00:00:00Z");
+    if (!Number.isFinite(from.getTime()) || !Number.isFinite(to.getTime()) ||
+        from.toISOString().slice(0, 10) !== filters.data.from ||
+        to.toISOString().slice(0, 10) !== filters.data.to || to < from) {
+      res.status(422).json({ error: { code: "INVALID_REPORT_WINDOW", message: "The report end date must be on or after a valid start date." } });
+      return;
+    }
+    try {
+      const [fest, reports, tasks, collections, destinations, outstanding] = await Promise.all([
+        database.query("SELECT name,timezone FROM waste_mgmt.fest f WHERE fest_id=1"),
+        database.query(
+          "SELECT r.status,COUNT(*)::int AS count FROM waste_mgmt.waste_reports r CROSS JOIN waste_mgmt.fest f " +
+          "WHERE r.fest_id=1 AND r.submitted_at >= ($1::date::timestamp AT TIME ZONE f.timezone) " +
+          "AND r.submitted_at < (($2::date + 1)::timestamp AT TIME ZONE f.timezone) GROUP BY r.status ORDER BY r.status",
+          [filters.data.from, filters.data.to]
+        ),
+        database.query(
+          "SELECT t.status,COUNT(*)::int AS count FROM waste_mgmt.collection_tasks t CROSS JOIN waste_mgmt.fest f " +
+          "WHERE t.fest_id=1 AND t.created_at >= ($1::date::timestamp AT TIME ZONE f.timezone) " +
+          "AND t.created_at < (($2::date + 1)::timestamp AT TIME ZONE f.timezone) GROUP BY t.status ORDER BY t.status",
+          [filters.data.from, filters.data.to]
+        ),
+        database.query(
+          "SELECT wc.name AS \"categoryName\",COALESCE(SUM(cr.weight_kg),0) AS \"verifiedWeightKg\",COUNT(cr.collection_record_id)::int AS \"verifiedRecords\" " +
+          "FROM waste_mgmt.waste_categories wc LEFT JOIN waste_mgmt.collection_records cr ON cr.category_id=wc.category_id " +
+          "LEFT JOIN waste_mgmt.collection_submissions cs ON cs.submission_id=cr.submission_id AND cs.status='verified' " +
+          "CROSS JOIN waste_mgmt.fest f WHERE cr.measured_at IS NULL OR " +
+          "(cr.measured_at >= ($1::date::timestamp AT TIME ZONE f.timezone) AND cr.measured_at < (($2::date + 1)::timestamp AT TIME ZONE f.timezone) AND cs.submission_id IS NOT NULL) " +
+          "GROUP BY wc.category_id,wc.name ORDER BY wc.name",
+          [filters.data.from, filters.data.to]
+        ),
+        database.query(
+          "SELECT md.destination_type AS \"destinationType\",COALESCE(SUM(ma.weight_kg),0) AS \"allocatedWeightKg\" " +
+          "FROM waste_mgmt.material_destinations md LEFT JOIN waste_mgmt.material_allocations ma ON ma.destination_id=md.destination_id " +
+          "AND ma.allocated_at >= ($1::date::timestamp AT TIME ZONE (SELECT timezone FROM waste_mgmt.fest WHERE fest_id=1)) " +
+          "AND ma.allocated_at < (($2::date + 1)::timestamp AT TIME ZONE (SELECT timezone FROM waste_mgmt.fest WHERE fest_id=1)) " +
+          "GROUP BY md.destination_type ORDER BY md.destination_type",
+          [filters.data.from, filters.data.to]
+        ),
+        database.query(
+          "SELECT COALESCE((SELECT SUM(remaining_weight_kg) FROM waste_mgmt.v_material_balance),0) + " +
+          "COALESCE((SELECT SUM(remaining_weight_kg) FROM waste_mgmt.v_segregation_balance),0) AS \"currentAwaitingProcessingKg\""
+        )
+      ]);
+      if (!fest.rows[0]) {
+        res.status(404).json({ error: { code: "FEST_NOT_FOUND", message: "Fest configuration not found." } });
+        return;
+      }
+      res.status(200).json({
+        data: {
+          festName: fest.rows[0].name,
+          timezone: fest.rows[0].timezone,
+          period: { from: filters.data.from, to: filters.data.to },
+          reportCounts: reports.rows,
+          taskCounts: tasks.rows,
+          verifiedCollections: collections.rows,
+          destinationTotals: destinations.rows,
+          currentAwaitingProcessingKg: outstanding.rows[0]?.currentAwaitingProcessingKg ?? 0,
+          metricDefinitions: {
+            reports: "Reports submitted during the selected local fest dates, grouped by current status.",
+            tasks: "Tasks created during the selected local fest dates, grouped by current status.",
+            verifiedCollections: "Collection weights measured during the selected local fest dates and belonging to verified submissions only.",
+            destinationTotals: "Material allocated to destinations during the selected local fest dates.",
+            currentAwaitingProcessingKg: "Current live remaining material snapshot at report generation time; it is not historical or restricted to the selected date range."
+          }
+        }
+      });
+    } catch (error) { next(error); }
+  });
+
+  app.get("/api/v1/analytics/export.csv", authenticate(database), requirePermission(database, "analytics.read"), async (req, res, next) => {
+    const query = z.object({ type: z.enum(["reports","tasks","collections"]) }).safeParse(req.query);
+    if (!query.success) {
+      res.status(400).json({ error: { code: "INVALID_EXPORT_TYPE", message: "Choose reports, tasks, or collections." } });
+      return;
+    }
+    const csvCell = (value: unknown) => {
+      let text = value === null || value === undefined ? "" : String(value);
+      if (/^[\s]*[=+@-]/.test(text)) text = "'" + text;
+      return '"' + text.replace(/"/g,'""') + '"';
+    };
+    try {
+      let headers: string[];
+      let rows: Record<string,unknown>[];
+      if (query.data.type === "reports") {
+        headers = ["reportId","status","priority","submittedAt","zone","area","category","description"];
+        const result = await database.query(
+          "SELECT r.report_id AS \"reportId\",r.status,r.priority,r.submitted_at AS \"submittedAt\",z.name AS zone,a.name AS area,wc.name AS category,r.description " +
+          "FROM waste_mgmt.waste_reports r JOIN waste_mgmt.areas a ON a.area_id=r.area_id " +
+          "JOIN waste_mgmt.zones z ON z.zone_id=a.zone_id JOIN waste_mgmt.waste_categories wc ON wc.category_id=r.category_id " +
+          "WHERE r.fest_id=1 ORDER BY r.submitted_at DESC LIMIT 10000"
+        );
+        rows = result.rows;
+      } else if (query.data.type === "tasks") {
+        headers = ["taskId","title","status","priority","dueAt","zone","area"];
+        const result = await database.query(
+          "SELECT t.task_id AS \"taskId\",t.title,t.status,t.priority,t.due_at AS \"dueAt\",z.name AS zone,a.name AS area " +
+          "FROM waste_mgmt.collection_tasks t JOIN waste_mgmt.areas a ON a.area_id=t.area_id " +
+          "JOIN waste_mgmt.zones z ON z.zone_id=a.zone_id WHERE t.fest_id=1 ORDER BY t.created_at DESC LIMIT 10000"
+        );
+        rows = result.rows;
+      } else {
+        headers = ["submissionId","taskId","category","weightKg","measurementMethod","measuredAt"];
+        const result = await database.query(
+          "SELECT cs.submission_id AS \"submissionId\",cs.task_id AS \"taskId\",wc.name AS category,cr.weight_kg AS \"weightKg\",cr.measurement_method AS \"measurementMethod\",cr.measured_at AS \"measuredAt\" " +
+          "FROM waste_mgmt.collection_records cr JOIN waste_mgmt.collection_submissions cs ON cs.submission_id=cr.submission_id " +
+          "JOIN waste_mgmt.waste_categories wc ON wc.category_id=cr.category_id WHERE cs.status='verified' " +
+          "ORDER BY cr.measured_at DESC LIMIT 10000"
+        );
+        rows = result.rows;
+      }
+      const csv = [headers.map(csvCell).join(","),...rows.map(row=>headers.map(header=>csvCell(row[header])).join(","))].join("\r\n");
+      res.setHeader("Content-Type","text/csv; charset=utf-8");
+      res.setHeader("Content-Disposition",'attachment; filename="baust-cse-fest-'+query.data.type+'.csv"');
+      res.status(200).send("\uFEFF"+csv);
+    } catch (error) { next(error); }
+  });
+
+  app.get("/api/v1/notifications", authenticate(database), async (req, res, next) => {
+    const auth = req.auth;
+    if (!auth) {
+      res.status(401).json({ error: { code: "UNAUTHENTICATED", message: "Sign in to continue." } });
+      return;
+    }
+    try {
+      const result = await database.query(
+        "SELECT notification_id AS \"notificationId\",type,title,body,resource_type AS \"resourceType\", " +
+        "resource_id AS \"resourceId\",read_at AS \"readAt\",created_at AS \"createdAt\" " +
+        "FROM waste_mgmt.notifications WHERE user_id=$1 ORDER BY created_at DESC LIMIT 50",
+        [auth.userId]
+      );
+      res.status(200).json({ data: result.rows });
+    } catch (error) { next(error); }
+  });
+
+  app.post("/api/v1/notifications/:notificationId/read", authenticate(database), async (req, res, next) => {
+    const id = z.string().uuid().safeParse(req.params.notificationId);
+    const auth = req.auth;
+    if (!id.success || !auth) {
+      res.status(404).json({ error: { code: "NOTIFICATION_NOT_FOUND", message: "Notification not found." } });
+      return;
+    }
+    try {
+      const result = await database.query(
+        "UPDATE waste_mgmt.notifications SET read_at=COALESCE(read_at,now()) " +
+        "WHERE notification_id=$1 AND user_id=$2 RETURNING notification_id AS \"notificationId\",read_at AS \"readAt\"",
+        [id.data,auth.userId]
+      );
+      if (!result.rows[0]) {
+        res.status(404).json({ error: { code: "NOTIFICATION_NOT_FOUND", message: "Notification not found." } });
+        return;
+      }
+      res.status(200).json({ data: result.rows[0] });
+    } catch (error) { next(error); }
+  });
+
+  app.post("/api/v1/notifications/read-all", authenticate(database), async (req, res, next) => {
+    const auth = req.auth;
+    if (!auth) {
+      res.status(401).json({ error: { code: "UNAUTHENTICATED", message: "Sign in to continue." } });
+      return;
+    }
+    try {
+      const result = await database.query(
+        "UPDATE waste_mgmt.notifications SET read_at=now() WHERE user_id=$1 AND read_at IS NULL",
+        [auth.userId]
+      );
+      res.status(200).json({ data: { markedRead: result.rowCount ?? 0 } });
+    } catch (error) { next(error); }
+  });
+
+  app.get("/api/v1/announcements", authenticate(database), async (req, res, next) => {
+    const auth = req.auth;
+    if (!auth) {
+      res.status(401).json({ error: { code: "UNAUTHENTICATED", message: "Sign in to continue." } });
+      return;
+    }
+    try {
+      const result = await database.query(
+        "SELECT DISTINCT an.announcement_id AS \"announcementId\",an.title,an.body,an.audience, " +
+        "an.published_at AS \"publishedAt\",an.expires_at AS \"expiresAt\" " +
+        "FROM waste_mgmt.announcements an " +
+        "WHERE an.published_at IS NOT NULL AND an.published_at<=now() AND (an.expires_at IS NULL OR an.expires_at>now()) " +
+        "AND (an.audience='all_users' " +
+        "OR (an.audience='role' AND EXISTS (SELECT 1 FROM waste_mgmt.user_roles ur WHERE ur.user_id=$1 AND ur.role_id=an.target_role_id)) " +
+        "OR (an.audience='zone' AND EXISTS (" +
+        "SELECT 1 FROM waste_mgmt.task_assignments ta JOIN waste_mgmt.collection_tasks t ON t.task_id=ta.task_id " +
+        "JOIN waste_mgmt.areas a ON a.area_id=t.area_id " +
+        "LEFT JOIN waste_mgmt.team_memberships tm ON tm.team_id=ta.team_id AND tm.user_id=$1 AND tm.ends_at IS NULL AND tm.starts_at<=now() " +
+        "WHERE a.zone_id=an.target_zone_id AND ta.unassigned_at IS NULL AND (ta.user_id=$1 OR tm.user_id=$1)))) " +
+        "ORDER BY an.published_at DESC LIMIT 50",
+        [auth.userId]
+      );
+      res.status(200).json({ data: result.rows });
+    } catch (error) { next(error); }
+  });
+
+  app.post("/api/v1/announcements", authenticate(database), requirePermission(database, "announcements.manage"), async (req, res, next) => {
+    const body = z.object({
+      title: z.string().trim().min(3).max(160),
+      body: z.string().trim().min(3).max(5000),
+      audience: z.enum(["all_users","role","zone"]).default("all_users"),
+      targetRoleId: z.coerce.number().int().positive().optional(),
+      targetZoneId: z.string().uuid().optional(),
+      expiresAt: z.string().datetime().optional()
+    }).strict().safeParse(req.body);
+    const auth = req.auth;
+    if (!body.success || !auth) {
+      res.status(400).json({ error: { code: "VALIDATION_ERROR", message: "Invalid announcement details." } });
+      return;
+    }
+    if ((body.data.audience==="role" && !body.data.targetRoleId) ||
+        (body.data.audience==="zone" && !body.data.targetZoneId) ||
+        (body.data.audience==="all_users" && (body.data.targetRoleId || body.data.targetZoneId)) ||
+        (body.data.audience==="role" && body.data.targetZoneId) ||
+        (body.data.audience==="zone" && body.data.targetRoleId)) {
+      res.status(422).json({ error: { code: "INVALID_AUDIENCE", message: "Choose exactly one matching audience target." } });
+      return;
+    }
+    try {
+      const client = await database.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query("SELECT set_config('app.actor_user_id',$1,true),set_config('app.request_id',$2,true)",[req.auth?.userId ?? "",res.locals.requestId]);
+        let audienceValid = true;
+        if (body.data.targetRoleId) {
+          const role = await client.query("SELECT role_id FROM waste_mgmt.roles WHERE role_id=$1",[body.data.targetRoleId]);
+          audienceValid = role.rowCount===1;
+        }
+        if (body.data.targetZoneId) {
+          const zone = await client.query("SELECT zone_id FROM waste_mgmt.zones WHERE zone_id=$1 AND is_active=TRUE",[body.data.targetZoneId]);
+          audienceValid = zone.rowCount===1;
+        }
+        if (!audienceValid) {
+          await client.query("ROLLBACK");
+          res.status(422).json({ error: { code: "INVALID_AUDIENCE_TARGET", message: "The selected role or zone is not valid." } });
+          return;
+        }
+        const inserted = await client.query(
+          "INSERT INTO waste_mgmt.announcements(title,body,audience,target_role_id,target_zone_id,published_by,published_at,expires_at) " +
+          "VALUES ($1,$2,$3,$4,$5,$6,now(),$7) RETURNING announcement_id AS \"announcementId\",title,audience,published_at AS \"publishedAt\"",
+          [body.data.title,body.data.body,body.data.audience,body.data.targetRoleId ?? null,body.data.targetZoneId ?? null,auth.userId,body.data.expiresAt ?? null]
+        );
+        const announcement = inserted.rows[0];
+        if (!announcement) throw new Error("Announcement could not be published.");
+        await client.query(
+          "INSERT INTO waste_mgmt.notifications(user_id,type,title,body,resource_type,resource_id) " +
+          "SELECT DISTINCT u.user_id,'announcement',$1,$2,'announcement',$3 FROM waste_mgmt.users u " +
+          "WHERE u.status='active' AND (" +
+          "$4='all_users' " +
+          "OR ($4='role' AND EXISTS (SELECT 1 FROM waste_mgmt.user_roles ur WHERE ur.user_id=u.user_id AND ur.role_id=$5)) " +
+          "OR ($4='zone' AND EXISTS (SELECT 1 FROM waste_mgmt.task_assignments ta " +
+          "JOIN waste_mgmt.collection_tasks t ON t.task_id=ta.task_id JOIN waste_mgmt.areas a ON a.area_id=t.area_id " +
+          "LEFT JOIN waste_mgmt.team_memberships tm ON tm.team_id=ta.team_id AND tm.user_id=u.user_id AND tm.ends_at IS NULL AND tm.starts_at<=now() " +
+          "WHERE a.zone_id=$6 AND ta.unassigned_at IS NULL AND (ta.user_id=u.user_id OR tm.user_id=u.user_id)))" +
+          ")",
+          [body.data.title,body.data.body,announcement.announcementId,body.data.audience,body.data.targetRoleId ?? null,body.data.targetZoneId ?? null]
+        );
+        await client.query("COMMIT");
+        res.status(201).json({ data: announcement });
+      } catch (error) {
+        await client.query("ROLLBACK").catch(() => undefined);
+        throw error;
+      } finally { client.release(); }
+    } catch (error) { next(error); }
+  });
+
+  app.get("/api/v1/public/form-options", async (_req, res, next) => {
+    try {
+      const [areas, categories] = await Promise.all([
+        database.query(
+          `SELECT a.area_id AS "areaId", a.name AS "areaName", z.name AS "zoneName"
+           FROM waste_mgmt.areas a
+           JOIN waste_mgmt.zones z ON z.zone_id=a.zone_id
+           WHERE a.fest_id=1 AND a.is_active=TRUE AND z.is_active=TRUE
+           ORDER BY z.name, a.name`
+        ),
+        database.query(
+          `SELECT category_id AS "categoryId", name
+           FROM waste_mgmt.waste_categories
+           WHERE is_active=TRUE ORDER BY name`
+        )
+      ]);
+      res.status(200).json({ data: { areas: areas.rows, categories: categories.rows } });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/v1/health", (_req, res) => {
+    res.status(200).json({ data: { status: "ok" } });
+  });
+
+  app.get("/api/v1/ready", async (_req, res, next) => {
+    try {
+      await database.query("SELECT 1");
+      res.status(200).json({ data: { status: "ready", database: "reachable" } });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/v1/public/reports", publicReportLimiter, privateUpload.array("attachments", 5), async (req, res, next) => {
+    const parsed = publicWasteReportSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({
+        error: { code: "VALIDATION_ERROR", message: "The report contains invalid fields.", details: parsed.error.flatten() }
+      });
+      return;
+    }
+
+    const uploadedFiles = Array.isArray(req.files) ? req.files : [];
+    const savedStorageKeys: string[] = [];
+    const client = await database.connect();
+    try {
+      const token = randomBytes(32).toString("base64url");
+      const tokenHash = createHash("sha256").update(token).digest("hex");
+      await client.query("BEGIN");
+        await client.query("SELECT set_config('app.actor_user_id',$1,true),set_config('app.request_id',$2,true)",[req.auth?.userId ?? "",res.locals.requestId]);
+
+      const area = await client.query(
+        "SELECT area_id FROM waste_mgmt.areas WHERE area_id=$1 AND fest_id=1 AND is_active=TRUE",
+        [parsed.data.areaId]
+      );
+      if (area.rowCount !== 1) {
+        await client.query("ROLLBACK");
+        res.status(422).json({ error: { code: "INVALID_AREA", message: "The selected area is not active for this fest." } });
+        return;
+      }
+
+      const category = await client.query(
+        "SELECT category_id FROM waste_mgmt.waste_categories WHERE category_id=$1 AND is_active=TRUE",
+        [parsed.data.categoryId]
+      );
+      if (category.rowCount !== 1) {
+        await client.query("ROLLBACK");
+        res.status(422).json({ error: { code: "INVALID_CATEGORY", message: "The selected waste category is not active." } });
+        return;
+      }
+
+      if (parsed.data.binId) {
+        const bin = await client.query(
+          "SELECT bin_id FROM waste_mgmt.bins WHERE bin_id=$1 AND area_id=$2 AND fest_id=1 AND is_active=TRUE",
+          [parsed.data.binId, parsed.data.areaId]
+        );
+        if (bin.rowCount !== 1) {
+          await client.query("ROLLBACK");
+          res.status(422).json({ error: { code: "INVALID_BIN", message: "The selected bin does not belong to the selected area." } });
+          return;
+        }
+      }
+
+      const inserted = await client.query<{ report_id: string; submitted_at: Date }>(
+        `INSERT INTO waste_mgmt.waste_reports
+          (area_id, bin_id, category_id, is_anonymous, reporter_name, reporter_contact, description, estimated_weight_kg)
+         VALUES ($1,$2,$3,TRUE,$4,$5,$6,$7)
+         RETURNING report_id, submitted_at`,
+        [
+          parsed.data.areaId,
+          parsed.data.binId ?? null,
+          parsed.data.categoryId,
+          parsed.data.reporterName ?? null,
+          parsed.data.reporterContact ?? null,
+          parsed.data.description,
+          parsed.data.estimatedWeightKg ?? null
+        ]
+      );
+
+      const report = inserted.rows[0];
+      if (!report) throw new Error("Report insert returned no row.");
+
+      await client.query(
+        "INSERT INTO waste_mgmt.report_tracking_tokens (report_id, token_hash, expires_at) VALUES ($1,$2,now()+interval '180 days')",
+        [report.report_id, tokenHash]
+      );
+      for (const file of uploadedFiles) {
+        const stored = await storePrivateUpload(file);
+        savedStorageKeys.push(stored.storageKey);
+        await client.query(
+          "INSERT INTO waste_mgmt.report_attachments(report_id,storage_key,original_file_name,media_type,file_size_bytes) " +
+          "VALUES ($1,$2,$3,$4,$5)",
+          [report.report_id,stored.storageKey,stored.originalFileName,stored.mediaType,stored.fileSizeBytes]
+        );
+      }
+
+
+      await client.query(
+        "INSERT INTO waste_mgmt.report_status_history (report_id, from_status, to_status, is_public) VALUES ($1,NULL,'submitted',TRUE)",
+        [report.report_id]
+      );
+      await client.query("COMMIT");
+
+      res.status(201).json({
+        data: {
+          reportId: report.report_id,
+          submittedAt: report.submitted_at,
+          trackingToken: token,
+          message: "Save this tracking token. It is shown only once."
+        }
+      });
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      await Promise.all(savedStorageKeys.map(removePrivateUpload));
+      next(error);
+    } finally {
+      client.release();
+    }
+  });
+
+  app.get("/api/v1/public/reports/:reportId/status", async (req, res, next) => {
+    const id = z.string().uuid().safeParse(req.params.reportId);
+    const token = z.string().min(40).max(100).safeParse(req.header("x-report-tracking-token"));
+    if (!id.success || !token.success) {
+      res.status(404).json({ error: { code: "REPORT_NOT_FOUND", message: "Report not found." } });
+      return;
+    }
+    try {
+      const tokenHash = createHash("sha256").update(token.data).digest("hex");
+      const result = await database.query(
+        `SELECT r.report_id, r.status, r.submitted_at, r.updated_at
+         FROM waste_mgmt.waste_reports r
+         JOIN waste_mgmt.report_tracking_tokens t ON t.report_id=r.report_id
+         WHERE r.report_id=$1 AND t.token_hash=$2
+           AND t.revoked_at IS NULL AND t.expires_at > now() AND r.is_anonymous=TRUE`,
+        [id.data, tokenHash]
+      );
+      const report = result.rows[0];
+      if (!report) {
+        res.status(404).json({ error: { code: "REPORT_NOT_FOUND", message: "Report not found." } });
+        return;
+      }
+      const [history,notes]=await Promise.all([
+        database.query(
+          "SELECT to_status AS \"status\",changed_at AS \"changedAt\" FROM waste_mgmt.report_status_history " +
+          "WHERE report_id=$1 AND is_public=TRUE ORDER BY changed_at",
+          [id.data]
+        ),
+        database.query(
+          "SELECT body,created_at AS \"createdAt\" FROM waste_mgmt.report_notes " +
+          "WHERE report_id=$1 AND visibility='public' ORDER BY created_at",
+          [id.data]
+        )
+      ]);
+      res.status(200).json({ data: { ...report, history: history.rows, notes: notes.rows } });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  const notFound = (_req: express.Request, res: express.Response) => {
+    res.status(404).json({ error: { code: "NOT_FOUND", message: "Resource not found." } });
+  };
+  app.use(notFound);
+
+  const errors: ErrorRequestHandler = (error, _req, res, _next) => {
+    if (res.headersSent) return;
+    if (error instanceof multer.MulterError) {
+      const status = error.code === "LIMIT_FILE_SIZE" ? 413 : 400;
+      res.status(status).json({ error: { code: error.code, message: status === 413 ? "Each file must be 5 MB or smaller." : "The upload contains too many files or fields." } });
+      return;
+    }
+    if (error instanceof UnsupportedUploadError) {
+      res.status(415).json({ error: { code: "UNSUPPORTED_FILE_TYPE", message: error.message } });
+      return;
+    }
+    const status = typeof error === "object" && error !== null && "status" in error
+      ? Number((error as { status?: unknown }).status)
+      : 500;
+    const databaseCode = typeof error === "object" && error !== null && "code" in error
+      ? String((error as { code?: unknown }).code)
+      : "";
+    if (databaseCode === "23505" || databaseCode === "40001") {
+      res.status(409).json({ error: { code: "CONFLICT", message: "The requested change conflicts with existing data.", requestId: res.locals.requestId } });
+      return;
+    }
+    if (databaseCode === "23503" || databaseCode === "23514" || databaseCode === "22P02") {
+      res.status(422).json({ error: { code: "DATA_CONSTRAINT", message: "The submitted data violates a database rule.", requestId: res.locals.requestId } });
+      return;
+    }
+    if (status === 400) {
+      res.status(400).json({ error: { code: "INVALID_JSON", message: "Request body contains invalid JSON." } });
+      return;
+    }
+    console.error("API request failed", { requestId: res.locals.requestId });
+    res.status(500).json({ error: { code: "INTERNAL_ERROR", message: "An unexpected error occurred.", requestId: res.locals.requestId } });
+  };
+  app.use(errors);
+
+  return app;
+}

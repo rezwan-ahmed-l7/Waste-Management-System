@@ -1,0 +1,98 @@
+name: CI
+on:
+  push:
+    branches: ["main", "docs/project-blueprint"]
+    paths-ignore:
+      - "package-lock.json"
+  pull_request:
+    branches: ["main", "docs/project-blueprint"]
+concurrency:
+  group: waste-management-ci-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: waste_management
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d waste_management"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/waste_management
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install exact locked dependencies
+        run: npm ci
+      - name: Inspect npm security advisories
+        run: |
+          npm audit --json > "$RUNNER_TEMP/npm-audit.json" || true
+          node --input-type=module -e 'import fs from "node:fs"; const a=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+"/npm-audit.json","utf8")); const rows=Object.entries(a.vulnerabilities ?? {}).map(([name,v])=>({name,severity:v.severity,range:v.range,fixAvailable:v.fixAvailable,via:v.via.filter(x=>typeof x==="object").map(x=>({title:x.title,url:x.url,range:x.range}))})); console.log(JSON.stringify(rows,null,2));'
+      - name: Enforce dependency security baseline
+        run: npm audit --audit-level=moderate
+      - run: npm run typecheck
+      - run: npm run lint
+      - name: Validate operational shell scripts
+        run: |
+          bash -n database/002_grants.sh
+          bash -n scripts/backup-compose.sh
+      - run: npm test
+      - name: Apply PostgreSQL schema
+        run: psql -v ON_ERROR_STOP=1 "$DATABASE_URL" -f database/001_schema.sql
+      - name: Provision least-privilege runtime database role
+        env:
+          PGHOST: localhost
+          PGPASSWORD: postgres
+          POSTGRES_USER: postgres
+          POSTGRES_DB: waste_management
+          APP_DB_PASSWORD: ci_app_password
+        run: bash database/002_grants.sh
+      - name: Assert runtime database role is not privileged
+        env:
+          PGPASSWORD: ci_app_password
+        run: test "$(psql -h localhost -U waste_app -d waste_management -Atc "SELECT rolsuper FROM pg_roles WHERE rolname=current_user")" = "f"
+      - name: Verify PostgreSQL schema as runtime role
+        env:
+          DATABASE_URL: postgresql://waste_app:ci_app_password@localhost:5432/waste_management
+        run: npm run db:verify
+      - name: Run database integrity smoke tests as runtime role
+        env:
+          PGPASSWORD: ci_app_password
+        run: psql -h localhost -U waste_app -d waste_management -v ON_ERROR_STOP=1 -f database/002_smoke_test.sql
+      - name: Test concurrent material allocation guard as runtime role
+        env:
+          DATABASE_URL: postgresql://waste_app:ci_app_password@localhost:5432/waste_management
+        run: npm run db:test-concurrency
+      - name: Execute DBMS reporting queries as runtime role
+        env:
+          PGPASSWORD: ci_app_password
+        run: psql -h localhost -U waste_app -d waste_management -v ON_ERROR_STOP=1 -f database/003_reporting_queries.sql
+      - name: Exercise PostgreSQL backup and restore
+        run: |
+          docker run --rm --network host -e PGPASSWORD=postgres -v "$RUNNER_TEMP:/backup" postgres:16 pg_dump -h 127.0.0.1 -U postgres -d waste_management -Fc --no-owner --no-acl -f /backup/waste_management.dump
+          PGPASSWORD=postgres createdb -h localhost -U postgres waste_management_restore_check
+          docker run --rm --network host -e PGPASSWORD=postgres -v "$RUNNER_TEMP:/backup" postgres:16 pg_restore -h 127.0.0.1 -U postgres -d waste_management_restore_check --exit-on-error --no-owner --no-privileges /backup/waste_management.dump
+          DATABASE_URL=postgresql://postgres:postgres@localhost:5432/waste_management_restore_check npm run db:verify
+          psql -v ON_ERROR_STOP=1 postgresql://postgres:postgres@localhost:5432/waste_management_restore_check -f database/002_smoke_test.sql
+          psql -v ON_ERROR_STOP=1 postgresql://postgres:postgres@localhost:5432/waste_management_restore_check -f database/003_reporting_queries.sql
+      - run: npm run build
+      - name: Validate production Compose configuration
+        run: docker compose --env-file .env.production.example config --quiet
+      - name: Build production container image
+        run: docker build --build-arg NEXT_PUBLIC_API_BASE_URL=https://fest.example.edu/api/v1 -t baust-waste-management:ci .
+      - name: Verify container runs as non-root
+        run: docker run --rm --entrypoint sh baust-waste-management:ci -c 'test "$(id -u)" -ne 0'

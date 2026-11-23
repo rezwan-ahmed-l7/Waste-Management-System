@@ -1,0 +1,103 @@
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: waste_management
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.production}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?Set APP_DB_PASSWORD in .env.production}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/001_schema.sql:/docker-entrypoint-initdb.d/001_schema.sql:ro
+      - ./database/002_grants.sh:/docker-entrypoint-initdb.d/002_grants.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U waste_app -d waste_management"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [private]
+
+  evidence-init:
+    image: alpine:3.22
+    user: "0:0"
+    command: ["sh","-c","mkdir -p /data/private && chown -R 1000:1000 /data/private"]
+    volumes:
+      - private_evidence:/data/private
+    restart: "no"
+
+  api:
+    build:
+      context: .
+      args:
+        NEXT_PUBLIC_API_BASE_URL: https://${DOMAIN:?Set DOMAIN in .env.production}/api/v1
+    image: baust-waste-management:local
+    restart: unless-stopped
+    command: ["npm","run","start","--workspace","@waste/api"]
+    user: "1000:1000"
+    environment:
+      NODE_ENV: production
+      API_HOST: 0.0.0.0
+      API_PORT: 4000
+      TRUST_PROXY_HOPS: 1
+      DATABASE_URL: postgresql://waste_app:${APP_DB_PASSWORD}@db:5432/waste_management
+      WEB_ORIGIN: https://${DOMAIN}
+      PRIVATE_STORAGE_DIR: /data/private
+      BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:-}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-}
+      PUBLIC_REPORT_RATE_LIMIT_WINDOW_MS: 900000
+      PUBLIC_REPORT_RATE_LIMIT_MAX: 8
+    volumes:
+      - private_evidence:/data/private
+    depends_on:
+      db:
+        condition: service_healthy
+      evidence-init:
+        condition: service_completed_successfully
+    expose: ["4000"]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4000/api/v1/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    networks: [private]
+
+  web:
+    image: baust-waste-management:local
+    restart: unless-stopped
+    command: ["npm","run","start","--workspace","@waste/web"]
+    user: "1000:1000"
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+    depends_on:
+      api:
+        condition: service_healthy
+    expose: ["3000"]
+    networks: [private]
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${DOMAIN:?Set DOMAIN in .env.production}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [web, api]
+    networks: [private]
+
+volumes:
+  postgres_data:
+  private_evidence:
+  caddy_data:
+  caddy_config:
+
+networks:
+  private:
+    driver: bridge
