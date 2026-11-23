@@ -14,8 +14,8 @@
     "dev": "npm run dev --workspace @waste/api",
     "dev:api": "npm run dev --workspace @waste/api",
     "dev:web": "npm run dev --workspace @waste/web",
-    "build": "npm run build --workspaces --if-present",
-    "typecheck": "npm run typecheck --workspaces --if-present",
+    "build": "npm run build --workspace @waste/contracts && npm run build --workspace @waste/api && npm run build --workspace @waste/web",
+    "typecheck": "npm run build --workspace @waste/contracts && npm run typecheck --workspace @waste/api && npm run typecheck --workspace @waste/web && npm run typecheck --workspace @waste/contracts",
     "test": "npm run test --workspace @waste/api",
     "lint": "eslint apps/api/src apps/web/src packages/contracts/src",
     "db:verify": "node scripts/verify-database.mjs",
@@ -30,5 +30,9 @@
   "overrides": {
     "postcss": "8.5.33",
     "sharp": "0.35.5"
+  },
+  "allowScripts": {
+    "argon2@0.44.0": true,
+    "esbuild@0.25.12": true
   }
 }

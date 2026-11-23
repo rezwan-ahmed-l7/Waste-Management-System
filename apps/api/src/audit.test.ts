@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import request from "supertest";
-import { createApp } from "./app.js";
+import { createApp } from "./application.js";
 
 const userId = "d5c70e5b-77e1-4f0e-9f48-2a0d90b2c901";
 const taskId = "e6f9b8b0-7f1b-4d5f-ae83-5e4d20c0a1a2";

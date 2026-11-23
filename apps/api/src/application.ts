@@ -3,7 +3,7 @@ import multer from "multer";
 import cors from "cors";
 import helmet from "helmet";
 import { rateLimit } from "express-rate-limit";
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 import { publicWasteReportSchema } from "@waste/contracts";
 import type { Pool, PoolClient } from "pg";
@@ -49,9 +49,22 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
     res.locals.requestId = requestId;
     next();
   });
-  app.use(helmet());
+  app.use((helmet as unknown as () => express.RequestHandler)());
   app.use(cors({ origin: env.WEB_ORIGIN, credentials: true }));
   app.use(express.json({ limit: "64kb" }));
+
+  app.get("/healthz", (_req, res) => {
+    res.status(200).json({ status: "ok" });
+  });
+
+  app.get("/api/v1/ready", async (_req, res) => {
+    try {
+      await database.query("SELECT 1");
+      res.status(200).json({ status: "ready", database: "connected" });
+    } catch {
+      res.status(503).json({ status: "not_ready", database: "unavailable" });
+    }
+  });
   app.use((req, res, next) => {
     const origin = req.header("origin");
     const isMutation = ["POST", "PUT", "PATCH", "DELETE"].includes(req.method);
@@ -62,6 +75,81 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
     next();
   });
 
+
+  // One-time initial administrator provisioning. The bootstrap token is never stored in the database.
+  app.post("/api/v1/admin/bootstrap", async (req, res, next) => {
+    if (!env.ADMIN_BOOTSTRAP_TOKEN || !env.ADMIN_BOOTSTRAP_EMAIL) {
+      res.status(404).json({ error: { code: "BOOTSTRAP_DISABLED", message: "Administrator setup is not available." } });
+      return;
+    }
+    const suppliedToken = req.header("x-admin-bootstrap-token") ?? "";
+    const expected = Buffer.from(env.ADMIN_BOOTSTRAP_TOKEN);
+    const supplied = Buffer.from(suppliedToken);
+    if (expected.length !== supplied.length || !timingSafeEqual(expected, supplied)) {
+      res.status(404).json({ error: { code: "SETUP_NOT_FOUND", message: "The setup link is invalid or expired." } });
+      return;
+    }
+    const body = z.object({
+      fullName: z.string().trim().min(2).max(120),
+      email: z.string().trim().email().max(254),
+      password: z.string().min(14).max(128)
+    }).strict().safeParse(req.body);
+    if (!body.success || body.data.email.toLowerCase() !== env.ADMIN_BOOTSTRAP_EMAIL.toLowerCase()) {
+      res.status(400).json({ error: { code: "VALIDATION_ERROR", message: "Enter the approved administrator email, a name, and a password of 14–128 characters." } });
+      return;
+    }
+
+    let stage = "database_connect";
+    let client: DatabaseClient | undefined;
+    try {
+      client = await database.connect();
+      stage = "begin_transaction";
+      await client.query("BEGIN");
+      await client.query("SELECT pg_advisory_xact_lock(hashtext('waste_mgmt_initial_admin_bootstrap'))");
+      const existingAdmin = await client.query(
+        "SELECT 1 FROM waste_mgmt.user_roles ur JOIN waste_mgmt.roles r ON r.role_id=ur.role_id WHERE r.role_key='administrator' LIMIT 1"
+      );
+      if (existingAdmin.rowCount) {
+        await client.query("ROLLBACK");
+        res.status(409).json({ error: { code: "BOOTSTRAP_ALREADY_USED", message: "The initial administrator has already been created. Use staff sign in." } });
+        return;
+      }
+      stage = "password_hash";
+      const passwordHash = await argon2.hash(body.data.password, { type: argon2.argon2id });
+      stage = "create_user";
+      const created = await client.query(
+        "INSERT INTO waste_mgmt.users(full_name,email,normalized_email,password_hash) VALUES ($1,$2,$2,$3) RETURNING user_id,full_name,normalized_email",
+        [body.data.fullName, env.ADMIN_BOOTSTRAP_EMAIL, passwordHash]
+      );
+      const user = created.rows[0];
+      if (!user) throw new Error("Administrator account could not be created.");
+      stage = "assign_admin_role";
+      const role = await client.query(
+        "INSERT INTO waste_mgmt.user_roles(user_id,role_id) SELECT $1,role_id FROM waste_mgmt.roles WHERE role_key='administrator' RETURNING role_id",
+        [user.user_id]
+      );
+      if (role.rowCount !== 1) throw new Error("Administrator role is missing from the database.");
+      stage = "create_session";
+      const sessionToken = randomBytes(32).toString("base64url");
+      const sessionHash = createHash("sha256").update(sessionToken).digest("hex");
+      await client.query(
+        "INSERT INTO waste_mgmt.sessions(user_id,token_hash,expires_at) VALUES ($1,$2,now()+interval '8 hours')",
+        [user.user_id, sessionHash]
+      );
+      stage = "commit_transaction";
+      await client.query("COMMIT");
+      const secure = env.NODE_ENV === "production" ? "; Secure" : "";
+      res.setHeader("Set-Cookie", "wm_session=" + sessionToken + "; Path=/api/v1; HttpOnly; SameSite=Lax; Max-Age=28800" + secure);
+      res.status(201).json({ data: { user: { userId: user.user_id, fullName: user.full_name, email: user.normalized_email, roles: ["administrator"] }, expiresInSeconds: 28800 } });
+    } catch (error) {
+      if (client) await client.query("ROLLBACK").catch(() => undefined);
+      const details = error && typeof error === "object" ? error as { name?: string; code?: string; message?: string } : {};
+      console.error("Admin bootstrap failed", { stage, errorName: details.name ?? "Error", errorCode: details.code ?? "UNKNOWN", requestId: res.locals.requestId });
+      next(error);
+    } finally {
+      client?.release();
+    }
+  });
 
   const loginLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
