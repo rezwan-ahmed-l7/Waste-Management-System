@@ -52,6 +52,19 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
   app.use(helmet());
   app.use(cors({ origin: env.WEB_ORIGIN, credentials: true }));
   app.use(express.json({ limit: "64kb" }));
+
+  app.get("/healthz", (_req, res) => {
+    res.status(200).json({ status: "ok" });
+  });
+
+  app.get("/api/v1/ready", async (_req, res) => {
+    try {
+      await database.query("SELECT 1");
+      res.status(200).json({ status: "ready", database: "connected" });
+    } catch {
+      res.status(503).json({ status: "not_ready", database: "unavailable" });
+    }
+  });
   app.use((req, res, next) => {
     const origin = req.header("origin");
     const isMutation = ["POST", "PUT", "PATCH", "DELETE"].includes(req.method);
