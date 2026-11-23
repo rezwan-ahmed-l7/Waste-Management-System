@@ -2,7 +2,7 @@
 
 A DBMS-first full-stack operational platform to coordinate waste reporting, scheduled cleaning, collection, segregation, recycling, disposal, and event-level reporting for BAUST CSE Fest.
 
-> **Status:** Implementation is in progress on `docs/project-blueprint`. Do not merge into `main` until all work and verification are complete and the owner approves.
+> **Status:** Core application implementation is merged into `main` and a Next.js frontend deployment is live on Vercel. Production operation is **not yet complete**: the Express API still needs a supported host, the API must be connected to the Supabase PostgreSQL database, and private evidence storage must be moved to durable persistent storage. Do not treat the current Vercel frontend deployment as a fully working production system.
 
 ## Product goals
 - Let attendees and staff report waste issues with location, category, description, and optional photo.
@@ -83,4 +83,4 @@ The API and web containers run as UID 1000 and are not published directly; Caddy
 - [x] CI verifies PostgreSQL backup/restore, non-superuser runtime privileges, audit context and a two-connection concurrent-allocation race; coordinated production database+evidence restore drill and live host/domain deployment remain operator tasks.
 - [ ] Complete operational security review and confirm fest-specific settings, privacy/retention policy, hosting and persistent private storage before production use.
 
-The core implementation is not a production deployment. Keep this branch unmerged until the remaining verification and operational gates are complete and the owner explicitly approves integration.
+The current Vercel deployment hosts only the Next.js web application. The Express API is a separate long-running service and is not deployed by that Vercel project. Do not point production traffic at a placeholder API URL. Complete API hosting, database connectivity, durable private evidence storage, production secrets, end-to-end verification, backup/restore validation, and fest-specific configuration before announcing the system as operational.
