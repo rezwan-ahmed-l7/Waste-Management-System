@@ -785,4 +785,17 @@ INSERT INTO waste_categories(code,name,description,is_recyclable) VALUES
  ('glass','Glass','Glass bottles and containers',TRUE),
  ('general','General Waste','Other non-specialized waste',FALSE),
  ('electronic','Electronic Waste','Discarded electronic items',FALSE);
+
+-- Pin function search paths to prevent object-shadowing attacks.
+ALTER FUNCTION waste_mgmt.audit_row_change() SET search_path = waste_mgmt, pg_temp;
+ALTER FUNCTION waste_mgmt.create_material_batches_after_verification() SET search_path = waste_mgmt, pg_temp;
+ALTER FUNCTION waste_mgmt.enforce_material_allocation_balance() SET search_path = waste_mgmt, pg_temp;
+ALTER FUNCTION waste_mgmt.enforce_report_transition() SET search_path = waste_mgmt, pg_temp;
+ALTER FUNCTION waste_mgmt.enforce_segregation_balance() SET search_path = waste_mgmt, pg_temp;
+ALTER FUNCTION waste_mgmt.enforce_task_transition() SET search_path = waste_mgmt, pg_temp;
+ALTER FUNCTION waste_mgmt.guard_collection_record_mutation() SET search_path = waste_mgmt, pg_temp;
+ALTER FUNCTION waste_mgmt.set_updated_at() SET search_path = waste_mgmt, pg_temp;
+ALTER FUNCTION waste_mgmt.validate_submission_decision() SET search_path = waste_mgmt, pg_temp;
+ALTER FUNCTION waste_mgmt.validate_task_verification() SET search_path = waste_mgmt, pg_temp;
+
 COMMIT;
