@@ -11,6 +11,8 @@ const envSchema = z.object({
     process.env.VERCEL || process.env.RENDER ? 1 : 0
   ),
   DATABASE_URL: z.string().url().optional(),
+  ADMIN_BOOTSTRAP_TOKEN: z.string().min(32).optional(),
+  ADMIN_BOOTSTRAP_EMAIL: z.string().email().optional(),
   WEB_ORIGIN: z.string().url().default("http://localhost:3000"),
   PRIVATE_STORAGE_DIR: z.string().min(1).default("./storage/private"),
   SUPABASE_URL: z.string().url().optional(),
