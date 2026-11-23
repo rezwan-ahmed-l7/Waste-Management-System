@@ -99,8 +99,11 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
       return;
     }
 
-    const client = await database.connect();
+    let stage = "database_connect";
+    let client: DatabaseClient | undefined;
     try {
+      client = await database.connect();
+      stage = "begin_transaction";
       await client.query("BEGIN");
       await client.query("SELECT pg_advisory_xact_lock(hashtext('waste_mgmt_initial_admin_bootstrap'))");
       const existingAdmin = await client.query(
@@ -111,33 +114,41 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
         res.status(409).json({ error: { code: "BOOTSTRAP_ALREADY_USED", message: "The initial administrator has already been created. Use staff sign in." } });
         return;
       }
+      stage = "password_hash";
       const passwordHash = await argon2.hash(body.data.password, { type: argon2.argon2id });
+      stage = "create_user";
       const created = await client.query(
         "INSERT INTO waste_mgmt.users(full_name,email,password_hash) VALUES ($1,$2,$3) RETURNING user_id,full_name,normalized_email",
         [body.data.fullName, env.ADMIN_BOOTSTRAP_EMAIL, passwordHash]
       );
       const user = created.rows[0];
       if (!user) throw new Error("Administrator account could not be created.");
+      stage = "assign_admin_role";
       const role = await client.query(
         "INSERT INTO waste_mgmt.user_roles(user_id,role_id) SELECT $1,role_id FROM waste_mgmt.roles WHERE role_key='administrator' RETURNING role_id",
         [user.user_id]
       );
       if (role.rowCount !== 1) throw new Error("Administrator role is missing from the database.");
+      stage = "create_session";
       const sessionToken = randomBytes(32).toString("base64url");
       const sessionHash = createHash("sha256").update(sessionToken).digest("hex");
       await client.query(
         "INSERT INTO waste_mgmt.sessions(user_id,token_hash,expires_at) VALUES ($1,$2,now()+interval '8 hours')",
         [user.user_id, sessionHash]
       );
+      stage = "commit_transaction";
       await client.query("COMMIT");
       const secure = env.NODE_ENV === "production" ? "; Secure" : "";
       res.setHeader("Set-Cookie", "wm_session=" + sessionToken + "; Path=/api/v1; HttpOnly; SameSite=Lax; Max-Age=28800" + secure);
       res.status(201).json({ data: { user: { userId: user.user_id, fullName: user.full_name, email: user.normalized_email, roles: ["administrator"] }, expiresInSeconds: 28800 } });
     } catch (error) {
-      await client.query("ROLLBACK").catch(() => undefined);
+      if (client) await client.query("ROLLBACK").catch(() => undefined);
+      const details = error && typeof error === "object" ? error as { name?: string; code?: string; message?: string } : {};
+      const safeMessage = String(details.message ?? "Unknown error").replace(/postgres(?:ql)?:\\/\\/[^\\s]+/gi, "[database connection redacted]").slice(0, 240);
+      console.error("Admin bootstrap failed", { stage, errorName: details.name ?? "Error", errorCode: details.code ?? "UNKNOWN", errorMessage: safeMessage, requestId: res.locals.requestId });
       next(error);
     } finally {
-      client.release();
+      client?.release();
     }
   });
 
