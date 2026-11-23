@@ -49,7 +49,7 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
     res.locals.requestId = requestId;
     next();
   });
-  app.use(helmet());
+  app.use((helmet as unknown as () => express.RequestHandler)());
   app.use(cors({ origin: env.WEB_ORIGIN, credentials: true }));
   app.use(express.json({ limit: "64kb" }));
 
