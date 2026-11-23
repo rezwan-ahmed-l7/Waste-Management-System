@@ -118,7 +118,7 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
       const passwordHash = await argon2.hash(body.data.password, { type: argon2.argon2id });
       stage = "create_user";
       const created = await client.query(
-        "INSERT INTO waste_mgmt.users(full_name,email,password_hash) VALUES ($1,$2,$3) RETURNING user_id,full_name,normalized_email",
+        "INSERT INTO waste_mgmt.users(full_name,email,normalized_email,password_hash) VALUES ($1,$2,$2,$3) RETURNING user_id,full_name,normalized_email",
         [body.data.fullName, env.ADMIN_BOOTSTRAP_EMAIL, passwordHash]
       );
       const user = created.rows[0];
@@ -144,8 +144,7 @@ export function createApp(database: Database, verifyPassword: (hash: string, pas
     } catch (error) {
       if (client) await client.query("ROLLBACK").catch(() => undefined);
       const details = error && typeof error === "object" ? error as { name?: string; code?: string; message?: string } : {};
-      const safeMessage = String(details.message ?? "Unknown error").replace(/postgres(?:ql)?:\\/\\/[^\\s]+/gi, "[database connection redacted]").slice(0, 240);
-      console.error("Admin bootstrap failed", { stage, errorName: details.name ?? "Error", errorCode: details.code ?? "UNKNOWN", errorMessage: safeMessage, requestId: res.locals.requestId });
+      console.error("Admin bootstrap failed", { stage, errorName: details.name ?? "Error", errorCode: details.code ?? "UNKNOWN", requestId: res.locals.requestId });
       next(error);
     } finally {
       client?.release();
