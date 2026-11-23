@@ -1,11 +1,11 @@
 name: CI
 on:
   push:
-    branches: ["docs/project-blueprint"]
+    branches: ["main", "docs/project-blueprint"]
     paths-ignore:
       - "package-lock.json"
   pull_request:
-    branches: ["docs/project-blueprint"]
+    branches: ["main", "docs/project-blueprint"]
 concurrency:
   group: waste-management-ci-${{ github.ref }}
   cancel-in-progress: true
